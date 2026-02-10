@@ -133,6 +133,34 @@ final class FeedStore: ObservableObject {
         }
     }
 
+    func refreshAllFeeds() async {
+        guard !isRefreshing else { return }
+        let feeds: [Feed]
+        do {
+            feeds = try fetchFeedsForRefresh()
+        } catch {
+            return
+        }
+
+        for feed in feeds {
+            do {
+                try await refresh(feed: feed)
+            } catch {
+                continue
+            }
+        }
+    }
+
+    func fetchFeedsForRefresh() throws -> [Feed] {
+        let context = persistence.container.viewContext
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        request.sortDescriptors = [
+            NSSortDescriptor(key: "orderIndex", ascending: true),
+            NSSortDescriptor(key: "url", ascending: true)
+        ]
+        return try context.fetch(request)
+    }
+
     private func parseFeed(data: Data) throws -> ParsedFeed {
         let parser = FeedParser(data: data)
         let result = parser.parse()

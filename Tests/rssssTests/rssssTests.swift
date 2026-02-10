@@ -231,6 +231,21 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(ContentView.detailIdentity(for: feed), feed.objectID)
     }
 
+    func testContentViewLastRefreshLabelShowsNeverWhenNil() {
+        XCTAssertEqual(ContentView.lastRefreshLabel(lastRefreshedAt: nil), "Last refresh: Never")
+    }
+
+    func testContentViewLastRefreshLabelFormatsDate() {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let label = ContentView.lastRefreshLabel(lastRefreshedAt: date, formatter: formatter)
+        XCTAssertEqual(label, "Last refresh: 2023-11-14 22:13")
+    }
+
     @MainActor
     func testFeedItemsControllerScopesToSelectedFeed() {
         let persistence = PersistenceController(inMemory: true)
@@ -563,11 +578,202 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(target?.objectID, second.objectID)
     }
 
+    @MainActor
+    func testRefreshSettingsDefaultIntervalIsFiveMinutes() {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Unable to create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = RefreshSettingsStore(userDefaults: defaults, key: "interval")
+        XCTAssertEqual(store.refreshIntervalMinutes, 5)
+        XCTAssertEqual(store.showLastRefresh, true)
+    }
+
+    @MainActor
+    func testRefreshSettingsClampsAndPersistsInterval() {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Unable to create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = RefreshSettingsStore(userDefaults: defaults, key: "interval")
+        store.refreshIntervalMinutes = 0
+        XCTAssertEqual(store.refreshIntervalMinutes, RefreshSettings.minimumRefreshIntervalMinutes)
+        XCTAssertEqual(
+            defaults.integer(forKey: "interval"),
+            RefreshSettings.minimumRefreshIntervalMinutes
+        )
+
+        store.refreshIntervalMinutes = 999
+        XCTAssertEqual(store.refreshIntervalMinutes, RefreshSettings.maximumRefreshIntervalMinutes)
+        XCTAssertEqual(
+            defaults.integer(forKey: "interval"),
+            RefreshSettings.maximumRefreshIntervalMinutes
+        )
+    }
+
+    @MainActor
+    func testRefreshSettingsPersistsShowLastRefreshToggle() {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Unable to create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = RefreshSettingsStore(userDefaults: defaults, key: "interval", showLastRefreshKey: "showLastRefresh")
+        XCTAssertEqual(store.showLastRefresh, true)
+
+        store.showLastRefresh = false
+        XCTAssertEqual(defaults.object(forKey: "showLastRefresh") as? Bool, false)
+
+        let reloaded = RefreshSettingsStore(userDefaults: defaults, key: "interval", showLastRefreshKey: "showLastRefresh")
+        XCTAssertEqual(reloaded.showLastRefresh, false)
+    }
+
+    @MainActor
+    func testAutoRefreshControllerSchedulesForegroundAndBackground() {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Unable to create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = RefreshSettingsStore(userDefaults: defaults, key: "interval")
+        let feedRefresher = MockFeedRefresher()
+        let foreground = MockForegroundRefreshScheduler()
+        let background = MockBackgroundRefreshScheduler()
+        let controller = AutoRefreshController(
+            feedStore: feedRefresher,
+            foregroundScheduler: foreground,
+            backgroundScheduler: background
+        )
+
+        controller.start(refreshIntervalMinutes: settings.refreshIntervalMinutes)
+
+        XCTAssertEqual(foreground.scheduledIntervals.last, 300)
+        XCTAssertEqual(background.scheduledIntervals.last, 300)
+    }
+
+    @MainActor
+    func testAutoRefreshControllerReschedulesWhenSettingsChange() async {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Unable to create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = RefreshSettingsStore(userDefaults: defaults, key: "interval")
+        let foreground = MockForegroundRefreshScheduler()
+        let background = MockBackgroundRefreshScheduler()
+        let controller = AutoRefreshController(
+            feedStore: MockFeedRefresher(),
+            foregroundScheduler: foreground,
+            backgroundScheduler: background
+        )
+
+        controller.start(refreshIntervalMinutes: settings.refreshIntervalMinutes)
+        settings.refreshIntervalMinutes = 10
+        controller.updateRefreshInterval(minutes: settings.refreshIntervalMinutes)
+
+        await waitUntil(timeout: 2.0) {
+            foreground.scheduledIntervals.last == 600 && background.scheduledIntervals.last == 600
+        }
+        XCTAssertEqual(foreground.scheduledIntervals.last, 600)
+        XCTAssertEqual(background.scheduledIntervals.last, 600)
+    }
+
+    @MainActor
+    func testAutoRefreshControllerBackgroundRefreshInvokesFeedStore() async {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Unable to create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = RefreshSettingsStore(userDefaults: defaults, key: "interval")
+        let feedRefresher = MockFeedRefresher()
+        let background = MockBackgroundRefreshScheduler()
+        let controller = AutoRefreshController(
+            feedStore: feedRefresher,
+            foregroundScheduler: MockForegroundRefreshScheduler(),
+            backgroundScheduler: background
+        )
+
+        controller.start(refreshIntervalMinutes: settings.refreshIntervalMinutes)
+        await background.runLatest()
+        XCTAssertEqual(feedRefresher.refreshAllCallCount, 1)
+    }
+
+    @MainActor
+    func testFetchFeedsForRefreshUsesOrderIndexAscending() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let store = FeedStore(persistence: persistence)
+
+        let feedA = Feed(context: context)
+        feedA.id = UUID()
+        feedA.url = "https://a.example.com"
+        feedA.orderIndex = 10
+
+        let feedB = Feed(context: context)
+        feedB.id = UUID()
+        feedB.url = "https://b.example.com"
+        feedB.orderIndex = 2
+
+        let feedC = Feed(context: context)
+        feedC.id = UUID()
+        feedC.url = "https://c.example.com"
+        feedC.orderIndex = 5
+
+        try? context.save()
+
+        let feeds = try? store.fetchFeedsForRefresh()
+        XCTAssertEqual(feeds?.map(\.url), ["https://b.example.com", "https://c.example.com", "https://a.example.com"])
+    }
+
     private func waitUntil(timeout: TimeInterval, condition: @escaping @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if await condition() { return }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
+    }
+}
+
+@MainActor
+private final class MockFeedRefresher: FeedRefreshing {
+    private(set) var refreshAllCallCount = 0
+
+    func refreshAllFeeds() async {
+        refreshAllCallCount += 1
+    }
+}
+
+private final class MockForegroundRefreshScheduler: ForegroundRefreshScheduling {
+    private(set) var scheduledIntervals: [TimeInterval] = []
+
+    func schedule(interval: TimeInterval, action: @escaping @MainActor () -> Void) {
+        scheduledIntervals.append(interval)
+    }
+
+    func invalidate() {}
+}
+
+private final class MockBackgroundRefreshScheduler: BackgroundRefreshScheduling {
+    private(set) var scheduledIntervals: [TimeInterval] = []
+    private var latestAction: (@Sendable () async -> Void)?
+
+    func schedule(interval: TimeInterval, action: @escaping @Sendable () async -> Void) {
+        scheduledIntervals.append(interval)
+        latestAction = action
+    }
+
+    func invalidate() {}
+
+    func runLatest() async {
+        await latestAction?()
     }
 }

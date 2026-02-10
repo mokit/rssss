@@ -3,6 +3,7 @@ import CoreData
 
 struct ContentView: View {
     @EnvironmentObject private var feedStore: FeedStore
+    @EnvironmentObject private var settingsStore: RefreshSettingsStore
 
     private let viewContext: NSManagedObjectContext
     @StateObject private var feedsController: FeedsController
@@ -30,9 +31,7 @@ struct ContentView: View {
         } detail: {
             detail
         }
-        .toolbar {
-            addFeedToolbar
-        }
+        .toolbar(removing: .sidebarToggle)
         .sheet(isPresented: $isAddSheetPresented) {
             AddFeedSheet { urlString in
                 Task {
@@ -62,35 +61,67 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        FeedSidebarView(
-            selection: $selectedFeedID,
-            feeds: feedsController.feeds,
-            unreadCounts: unreadCountsController.counts,
-            onDelete: deleteFeed
-        )
-        .frame(minWidth: 220, idealWidth: 260)
-        .task {
-            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
-        }
-        .onChange(of: feedsController.feeds.count) { _, _ in
-            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button {
+                    isAddSheetPresented = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.plain)
+                .help("Add feed")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            FeedSidebarView(
+                selection: $selectedFeedID,
+                feeds: feedsController.feeds,
+                unreadCounts: unreadCountsController.counts,
+                onDelete: deleteFeed
+            )
+            .frame(minWidth: 220, idealWidth: 260)
+            .task {
+                selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+            }
+            .onChange(of: feedsController.feeds.count) { _, _ in
+                selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+            }
         }
     }
 
     @ViewBuilder
     private var detail: some View {
         if let feed = selectedFeed {
-            FeedItemsView(
-                feedObjectID: feed.objectID,
-                showRead: showRead,
-                sessionToken: sessionToken,
-                viewContext: viewContext
-            )
-                .id(ContentView.detailIdentity(for: feed))
-                .navigationTitle(feed.displayName)
-                .toolbar {
-                    feedToolbar(for: feed)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(feed.displayName)
+                        .font(.title2.weight(.semibold))
+                    if settingsStore.showLastRefresh {
+                        Text(ContentView.lastRefreshLabel(lastRefreshedAt: feed.lastRefreshedAt))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                FeedItemsView(
+                    feedObjectID: feed.objectID,
+                    showRead: showRead,
+                    sessionToken: sessionToken,
+                    viewContext: viewContext
+                )
+                .id(ContentView.detailIdentity(for: feed))
+            }
+            .navigationTitle(feed.displayName)
+            .toolbar {
+                feedToolbar(for: feed)
+            }
         } else {
             VStack(spacing: 12) {
                 Image("RSSSSLogo")
@@ -142,18 +173,6 @@ struct ContentView: View {
         }
     }
 
-    @ToolbarContentBuilder
-    private var addFeedToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                isAddSheetPresented = true
-            } label: {
-                Image(systemName: "plus")
-            }
-            .help("Add feed")
-        }
-    }
-
     private func deleteFeed(_ feed: Feed) {
         do {
             guard !feed.isDeleted else { return }
@@ -186,6 +205,13 @@ struct ContentView: View {
 }
 
 extension ContentView {
+    private static let lastRefreshFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
     static func resolveSelectedFeed(id: NSManagedObjectID?, in context: NSManagedObjectContext) -> Feed? {
         guard let id else { return nil }
         guard let feed = try? context.existingObject(with: id) as? Feed else { return nil }
@@ -198,6 +224,11 @@ extension ContentView {
 
     static func detailIdentity(for feed: Feed?) -> NSManagedObjectID? {
         feed?.objectID
+    }
+
+    static func lastRefreshLabel(lastRefreshedAt: Date?, formatter: DateFormatter = ContentView.lastRefreshFormatter) -> String {
+        guard let lastRefreshedAt else { return "Last refresh: Never" }
+        return "Last refresh: \(formatter.string(from: lastRefreshedAt))"
     }
 
     static func nextSelection(current: NSManagedObjectID?, feeds: [Feed]) -> NSManagedObjectID? {
