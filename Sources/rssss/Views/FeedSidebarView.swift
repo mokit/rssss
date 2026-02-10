@@ -1,7 +1,46 @@
 import SwiftUI
 import CoreData
+import AppKit
 
-struct FeedSidebarView: NSViewRepresentable {
+struct FeedSidebarView: View {
+    @Binding var selection: NSManagedObjectID?
+    let feeds: [Feed]
+    let unreadCounts: [NSManagedObjectID: Int]
+    let onDelete: (Feed) -> Void
+    let onAdd: () -> Void
+
+    static let bottomBarVerticalPadding: CGFloat = 10
+    static let bottomBarHorizontalPadding: CGFloat = 10
+    static let addButtonSize: CGFloat = 16
+
+    var body: some View {
+        VStack(spacing: 0) {
+            FeedSidebarTableView(
+                selection: $selection,
+                feeds: feeds,
+                unreadCounts: unreadCounts,
+                onDelete: onDelete
+            )
+
+            Divider()
+
+            HStack {
+                Button(action: onAdd) {
+                    Image(systemName: "plus")
+                        .frame(width: FeedSidebarView.addButtonSize, height: FeedSidebarView.addButtonSize)
+                }
+                .buttonStyle(.plain)
+                .help("Add feed")
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, FeedSidebarView.bottomBarVerticalPadding)
+            .padding(.horizontal, FeedSidebarView.bottomBarHorizontalPadding)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+struct FeedSidebarTableView: NSViewRepresentable {
     @Binding var selection: NSManagedObjectID?
     let feeds: [Feed]
     let unreadCounts: [NSManagedObjectID: Int]
@@ -61,12 +100,12 @@ struct FeedSidebarView: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
-        var parent: FeedSidebarView
+        var parent: FeedSidebarTableView
         weak var tableView: NSTableView?
         fileprivate var lastFeedIDs: [NSManagedObjectID] = []
         fileprivate var lastUnreadCounts: [NSManagedObjectID: Int] = [:]
 
-        init(parent: FeedSidebarView) {
+        init(parent: FeedSidebarTableView) {
             self.parent = parent
         }
 
@@ -157,6 +196,10 @@ struct FeedSidebarView: NSViewRepresentable {
             parent.onDelete(parent.feeds[row])
         }
     }
+}
+
+extension FeedSidebarView {
+    typealias Coordinator = FeedSidebarTableView.Coordinator
 }
 
 private final class NoKeyboardTableView: NSTableView {

@@ -1,5 +1,6 @@
 import XCTest
 import CoreData
+import AppKit
 @testable import rssss
 
 final class rssssTests: XCTestCase {
@@ -216,6 +217,26 @@ final class rssssTests: XCTestCase {
         XCTAssertFalse(stateA.showRead)
         XCTAssertFalse(stateB.showRead)
         XCTAssertNotEqual(stateA.sessionToken, stateB.sessionToken)
+    }
+
+    func testContentViewSidebarPaneWidths() {
+        XCTAssertEqual(ContentView.sidebarMinWidth, 220)
+        XCTAssertEqual(ContentView.sidebarIdealWidth, 260)
+        XCTAssertEqual(ContentView.sidebarMaxWidth, 360)
+    }
+
+    func testContentViewDetailPaneMinWidth() {
+        XCTAssertEqual(ContentView.detailMinWidth, 380)
+    }
+
+    func testFeedSidebarBottomBarLayoutConstants() {
+        XCTAssertEqual(FeedSidebarView.bottomBarVerticalPadding, 10)
+        XCTAssertEqual(FeedSidebarView.bottomBarHorizontalPadding, 10)
+        XCTAssertEqual(FeedSidebarView.addButtonSize, 16)
+    }
+
+    func testSidebarPaneUsesSystemSidebarMaterial() {
+        XCTAssertEqual(SidebarPaneView.sidebarMaterial, .sidebar)
     }
 
     @MainActor

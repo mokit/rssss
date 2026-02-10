@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		06FD1661FEC4655CB52D3349 /* rssssTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6FD58B52F22F36273C45D4C /* rssssTests.swift */; };
+		1965D183306F1F22548E931A /* SidebarPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71625CE269A9810E0744D174 /* SidebarPaneView.swift */; };
 		1F1B5F911728F05AD1002A18 /* FeedRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A6157D6A57A214A179E3054 /* FeedRowView.swift */; };
 		223CBE8F2993BF50D44C3795 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF3B6F2730422981A21C4A6 /* ContentView.swift */; };
 		59BCFF904CD9601309417322 /* ItemRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A22F7F233D3FEF3AB4E18DD8 /* ItemRowView.swift */; };
@@ -46,6 +47,7 @@
 		673F1573A2F7402D0F8EF9C8 /* FetchedControllers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FetchedControllers.swift; sourceTree = "<group>"; };
 		6EF3B6F2730422981A21C4A6 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		70D70962714FE7916D51A9D5 /* AddFeedSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddFeedSheet.swift; sourceTree = "<group>"; };
+		71625CE269A9810E0744D174 /* SidebarPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarPaneView.swift; sourceTree = "<group>"; };
 		731DB193F4CA4216FDB29818 /* RefreshSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefreshSettings.swift; sourceTree = "<group>"; };
 		8A6157D6A57A214A179E3054 /* FeedRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedRowView.swift; sourceTree = "<group>"; };
 		8C137A5479D51669B662B101 /* ReadTracking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadTracking.swift; sourceTree = "<group>"; };
@@ -126,6 +128,7 @@
 				1B9D7CC4BAD6500E4F2832D8 /* FeedSidebarView.swift */,
 				A22F7F233D3FEF3AB4E18DD8 /* ItemRowView.swift */,
 				D8B1D7B31A685266286F1F10 /* SettingsView.swift */,
+				71625CE269A9810E0744D174 /* SidebarPaneView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -259,6 +262,7 @@
 				764908D4CDD143C153EB9A58 /* ReadTracking.swift in Sources */,
 				6F9A5BC397799C88E4BA5B28 /* RefreshSettings.swift in Sources */,
 				C9BB4872E9C0836C92EF4F11 /* SettingsView.swift in Sources */,
+				1965D183306F1F22548E931A /* SidebarPaneView.swift in Sources */,
 				641F0CD4D0DD9EAD4F2FD082 /* rssss.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

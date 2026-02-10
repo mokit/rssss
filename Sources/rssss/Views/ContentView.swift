@@ -26,12 +26,29 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
+        HSplitView {
+            SidebarPaneView(
+                selection: $selectedFeedID,
+                feeds: feedsController.feeds,
+                unreadCounts: unreadCountsController.counts,
+                onDelete: deleteFeed,
+                onAdd: { isAddSheetPresented = true }
+            )
+                .task {
+                    selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+                }
+                .onChange(of: feedsController.feeds.count) { _, _ in
+                    selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+                }
+                .frame(
+                    minWidth: ContentView.sidebarMinWidth,
+                    idealWidth: ContentView.sidebarIdealWidth,
+                    maxWidth: ContentView.sidebarMaxWidth
+                )
+
+            detailContainer
+                .frame(minWidth: ContentView.detailMinWidth, maxWidth: .infinity)
         }
-        .toolbar(removing: .sidebarToggle)
         .sheet(isPresented: $isAddSheetPresented) {
             AddFeedSheet { urlString in
                 Task {
@@ -60,55 +77,17 @@ struct ContentView: View {
         }
     }
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button {
-                    isAddSheetPresented = true
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(.plain)
-                .help("Add feed")
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-
-            Divider()
-
-            FeedSidebarView(
-                selection: $selectedFeedID,
-                feeds: feedsController.feeds,
-                unreadCounts: unreadCountsController.counts,
-                onDelete: deleteFeed
-            )
-            .frame(minWidth: 220, idealWidth: 260)
-            .task {
-                selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
-            }
-            .onChange(of: feedsController.feeds.count) { _, _ in
-                selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
-            }
-        }
+    private var detailContainer: some View {
+        detail
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(nsColor: .controlBackgroundColor))
     }
 
     @ViewBuilder
     private var detail: some View {
         if let feed = selectedFeed {
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(feed.displayName)
-                        .font(.title2.weight(.semibold))
-                    if settingsStore.showLastRefresh {
-                        Text(ContentView.lastRefreshLabel(lastRefreshedAt: feed.lastRefreshedAt))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                detailHeader(for: feed)
 
                 FeedItemsView(
                     feedObjectID: feed.objectID,
@@ -118,59 +97,67 @@ struct ContentView: View {
                 )
                 .id(ContentView.detailIdentity(for: feed))
             }
-            .navigationTitle(feed.displayName)
-            .toolbar {
-                feedToolbar(for: feed)
-            }
         } else {
-            VStack(spacing: 12) {
+            VStack {
                 Image("RSSSSLogo")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 64, height: 64)
+                    .frame(width: 96, height: 96)
                     .foregroundStyle(.secondary)
-                Text("No Feed Selected")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("Select a feed from the sidebar or add a new one.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .opacity(0.75)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    @ToolbarContentBuilder
-    private func feedToolbar(for feed: Feed) -> some ToolbarContent {
-        ToolbarItemGroup {
-            Button {
-                refresh(feed)
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .help("Refresh feed")
-            .disabled(feedStore.isRefreshing)
-
-            Button {
-                Task {
-                    do {
-                        try await feedStore.markAllRead(feed: feed)
-                    } catch {
-                        alertMessage = error.localizedDescription
-                    }
+    private func detailHeader(for feed: Feed) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(feed.displayName)
+                    .font(.title2.weight(.semibold))
+                if settingsStore.showLastRefresh {
+                    Text(ContentView.lastRefreshLabel(lastRefreshedAt: feed.lastRefreshedAt))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-            } label: {
-                Label("Mark All Read", systemImage: "checkmark.circle")
             }
-            .help("Mark all items in this feed as read")
 
-            Button {
-                showRead.toggle()
-            } label: {
-                Label(showRead ? "Hide Read" : "Show Read", systemImage: "eye")
+            Spacer(minLength: 0)
+
+            HStack(spacing: 10) {
+                Button {
+                    refresh(feed)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh feed")
+                .disabled(feedStore.isRefreshing)
+
+                Button {
+                    Task {
+                        do {
+                            try await feedStore.markAllRead(feed: feed)
+                        } catch {
+                            alertMessage = error.localizedDescription
+                        }
+                    }
+                } label: {
+                    Image(systemName: "checkmark.circle")
+                }
+                .help("Mark all items in this feed as read")
+
+                Button {
+                    showRead.toggle()
+                } label: {
+                    Image(systemName: showRead ? "eye.slash" : "eye")
+                }
+                .help(showRead ? "Hide read items" : "Show read items")
             }
-            .help(showRead ? "Hide read items" : "Show read items")
+            .labelStyle(.iconOnly)
         }
+        .padding(.horizontal, 16)
+        .padding(.top, -6)
+        .padding(.bottom, 8)
     }
 
     private func deleteFeed(_ feed: Feed) {
@@ -205,6 +192,11 @@ struct ContentView: View {
 }
 
 extension ContentView {
+    static let sidebarMinWidth: CGFloat = 220
+    static let sidebarIdealWidth: CGFloat = 260
+    static let sidebarMaxWidth: CGFloat = 360
+    static let detailMinWidth: CGFloat = 380
+
     private static let lastRefreshFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short

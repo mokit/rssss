@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct rssssApp: App {
@@ -33,6 +34,7 @@ struct rssssApp: App {
                     .frame(minWidth: 200, minHeight: 120)
             }
         }
+        .windowStyle(.hiddenTitleBar)
 
         Settings {
             SettingsView()
@@ -51,6 +53,8 @@ private struct RootView: View {
         ContentView(viewContext: persistence.container.viewContext)
             .environmentObject(feedStore)
             .environmentObject(settingsStore)
+            .background(WindowChromeConfigurator().frame(width: 0, height: 0))
+            .ignoresSafeArea(.container, edges: .top)
             .task {
                 autoRefreshController.start(refreshIntervalMinutes: settingsStore.refreshIntervalMinutes)
             }
@@ -60,5 +64,24 @@ private struct RootView: View {
             .onDisappear {
                 autoRefreshController.stop()
             }
+    }
+}
+
+private struct WindowChromeConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        ConfigurationView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class ConfigurationView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
     }
 }
