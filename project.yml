@@ -1,0 +1,29 @@
+name: rssss
+options:
+  bundleIdPrefix: be.mokit
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  PRODUCT_BUNDLE_IDENTIFIER: be.mokit.rssss
+  SWIFT_VERSION: "5.9"
+packages:
+  FeedKit:
+    url: https://github.com/nmdias/FeedKit.git
+    from: 9.1.0
+
+targets:
+  rssss:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    info:
+      path: rssss/Info.plist
+      properties:
+        CFBundleDisplayName: rssss
+        LSApplicationCategoryType: public.app-category.news
+        NSPrincipalClass: NSApplication
+        NSHumanReadableCopyright: ""
+    settings:
+    dependencies:
+      - package: FeedKit
