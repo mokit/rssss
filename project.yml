@@ -27,3 +27,21 @@ targets:
     settings:
     dependencies:
       - package: FeedKit
+  rssssTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: rssss
+
+schemes:
+  rssss:
+    build:
+      targets:
+        rssss: all
+    test:
+      targets:
+        - rssssTests

@@ -13,9 +13,22 @@ struct rssssApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(\.managedObjectContext, persistence.container.viewContext)
-                .environmentObject(feedStore)
+            if persistence.isLoaded {
+                RootView(persistence: persistence, feedStore: feedStore)
+            } else {
+                ProgressView("Loading...")
+                    .frame(minWidth: 200, minHeight: 120)
+            }
         }
+    }
+}
+
+private struct RootView: View {
+    let persistence: PersistenceController
+    let feedStore: FeedStore
+
+    var body: some View {
+        ContentView(viewContext: persistence.container.viewContext)
+            .environmentObject(feedStore)
     }
 }

@@ -5,7 +5,12 @@ struct ItemFramePreferenceKey: PreferenceKey {
     static var defaultValue: [NSManagedObjectID: CGRect] = [:]
 
     static func reduce(value: inout [NSManagedObjectID: CGRect], nextValue: () -> [NSManagedObjectID: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { $1 })
+        for (key, nextFrame) in nextValue() {
+            let current = value[key] ?? .null
+            if current != nextFrame {
+                value[key] = nextFrame
+            }
+        }
     }
 }
 

@@ -28,9 +28,11 @@ final class FeedStore: ObservableObject {
 
     func addFeed(urlString: String) throws -> Feed {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed), url.scheme?.hasPrefix("http") == true else {
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() else {
             throw FeedError.invalidURL
         }
+        guard scheme == "http" || scheme == "https" else { throw FeedError.invalidURL }
+        guard scheme == "https" else { throw FeedError.insecureURL }
 
         let context = persistence.container.viewContext
         let request: NSFetchRequest<Feed> = Feed.fetchRequest()
@@ -53,6 +55,7 @@ final class FeedStore: ObservableObject {
 
     func deleteFeed(_ feed: Feed) throws {
         let context = persistence.container.viewContext
+        guard feed.managedObjectContext === context, !feed.isDeleted else { return }
         context.delete(feed)
         try context.save()
     }
@@ -62,7 +65,12 @@ final class FeedStore: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
 
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let data: Data
+        do {
+            (data, _) = try await URLSession.shared.data(from: url)
+        } catch let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection {
+            throw FeedError.insecureURL
+        }
         let parsed = try parseFeed(data: data)
 
         let container = persistence.container
@@ -208,14 +216,17 @@ final class FeedStore: ObservableObject {
     }
 }
 
-enum FeedError: LocalizedError {
+enum FeedError: LocalizedError, Equatable {
     case invalidURL
+    case insecureURL
     case parseFailed
 
     var errorDescription: String? {
         switch self {
         case .invalidURL:
             return "Please enter a valid http(s) feed URL."
+        case .insecureURL:
+            return "This feed URL uses HTTP. Please use an HTTPS feed URL instead."
         case .parseFailed:
             return "Unable to parse this feed."
         }

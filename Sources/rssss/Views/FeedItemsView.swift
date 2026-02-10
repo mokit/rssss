@@ -3,12 +3,13 @@ import CoreData
 import AppKit
 
 struct FeedItemsView: View {
-    @Environment(\.managedObjectContext) private var viewContext
-    let feedID: UUID
+    private let viewContext: NSManagedObjectContext
+    let feedObjectID: NSManagedObjectID
     let showRead: Bool
     let sessionToken: UUID
 
     @StateObject private var readMarker = ReadMarker(persistence: PersistenceController.shared)
+    @StateObject private var itemsController: FeedItemsController
     @State private var sessionUnreadIDs: Set<NSManagedObjectID> = []
     @State private var selectedItemID: NSManagedObjectID?
     @State private var suppressReadTracking = false
@@ -17,27 +18,16 @@ struct FeedItemsView: View {
     @State private var selectionChangedByKeyboard = false
     @State private var scrollProxy: ScrollViewProxy?
 
-    @FetchRequest private var items: FetchedResults<FeedItem>
-
-    init(feedID: UUID, showRead: Bool, sessionToken: UUID) {
-        self.feedID = feedID
+    init(feedObjectID: NSManagedObjectID, showRead: Bool, sessionToken: UUID, viewContext: NSManagedObjectContext) {
+        self.feedObjectID = feedObjectID
         self.showRead = showRead
         self.sessionToken = sessionToken
-
-        let predicate = NSPredicate(format: "feed.id == %@", feedID as CVarArg)
-
-        _items = FetchRequest(
-            sortDescriptors: [
-                NSSortDescriptor(keyPath: \FeedItem.pubDate, ascending: false),
-                NSSortDescriptor(keyPath: \FeedItem.createdAt, ascending: false)
-            ],
-            predicate: predicate,
-            animation: .default
-        )
+        self.viewContext = viewContext
+        _itemsController = StateObject(wrappedValue: FeedItemsController(context: viewContext, feedObjectID: feedObjectID))
     }
 
     var body: some View {
-        let visibleItems = filteredItems()
+        let visibleItems = filteredItems(from: itemsController.items)
 
         if visibleItems.isEmpty {
             VStack(spacing: 12) {
@@ -49,7 +39,7 @@ struct FeedItemsView: View {
                 Text("No Items")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(showRead ? "This feed has no items." : "No unread items. Toggle Show Read to see older items.")
+                Text(FeedItemsView.emptyMessage(showRead: showRead))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -59,7 +49,7 @@ struct FeedItemsView: View {
                 VStack(spacing: 0) {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(visibleItems) { item in
+                            ForEach(visibleItems, id: \.objectID) { item in
                                 ItemRowView(
                                     item: item,
                                     isSelected: item.objectID == selectedItemID,
@@ -109,28 +99,23 @@ struct FeedItemsView: View {
                     scrollProxy = proxy
                 }
                 .background(
-                    KeyCaptureView { event in
+                    KeyMonitorView { event in
                         handleKey(event, visibleItems: visibleItems)
                     }
                 )
             }
             
         .task(id: sessionToken) {
-                sessionUnreadIDs = Set(items.filter { !$0.isRead }.map { $0.objectID })
+                sessionUnreadIDs = Set(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
             }
-            .onChange(of: items.map { $0.objectID }) { _, _ in
-                sessionUnreadIDs.formUnion(items.filter { !$0.isRead }.map { $0.objectID })
+            .onChange(of: itemsController.items.map { $0.objectID }) { _, _ in
+                sessionUnreadIDs.formUnion(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
             }
         }
     }
 
-    private func filteredItems() -> [FeedItem] {
-        if showRead {
-            return Array(items)
-        }
-        return items.filter { item in
-            !item.isRead || sessionUnreadIDs.contains(item.objectID)
-        }
+    private func filteredItems(from items: [FeedItem]) -> [FeedItem] {
+        FeedItemsView.filteredItems(items: items, showRead: showRead, sessionUnreadIDs: sessionUnreadIDs)
     }
 
     private func moveSelection(in items: [FeedItem], delta: Int) {
@@ -140,15 +125,12 @@ struct FeedItemsView: View {
             return
         }
         guard let currentID = selectedItemID else {
-            let firstID = items.first?.objectID
+            let firstIndex = FeedItemsView.nextSelectionIndex(currentIndex: nil, itemCount: items.count, delta: delta)
+            let firstID = firstIndex.flatMap { items[$0].objectID }
             selectedItemID = firstID
             if let firstID, let proxy = scrollProxy {
                 proxy.scrollTo(firstID, anchor: .top)
             }
-            return
-        }
-
-        if ensureCurrentSelectionVisibility() {
             return
         }
 
@@ -158,13 +140,13 @@ struct FeedItemsView: View {
             selectedItemID = items.first?.objectID
             return
         }
-        let nextIndex = max(0, min(items.count - 1, currentIndex + delta))
+        let nextIndex = FeedItemsView.nextSelectionIndex(currentIndex: currentIndex, itemCount: items.count, delta: delta) ?? currentIndex
         selectionChangedByKeyboard = true
         selectedItemID = items[nextIndex].objectID
     }
 
     private func markReadOnNavigate(from objectID: NSManagedObjectID) {
-        if let item = items.first(where: { $0.objectID == objectID }), !item.isRead {
+        if let item = itemsController.items.first(where: { $0.objectID == objectID }), !item.isRead {
             item.isRead = true
             if viewContext.hasChanges {
                 try? viewContext.save()
@@ -188,81 +170,160 @@ struct FeedItemsView: View {
 
     private func ensureSelectionVisibility(in items: [FeedItem], proxy: ScrollViewProxy) {
         guard let selectedItemID else { return }
-        guard let selectedFrame = itemFrames[selectedItemID] else { return }
-
-        if selectedFrame.minY < 0 {
-            proxy.scrollTo(selectedItemID, anchor: .top)
+        guard let selectedFrame = itemFrames[selectedItemID] else {
+            proxy.scrollTo(selectedItemID, anchor: .center)
             return
         }
 
-        guard let selectedIndex = items.firstIndex(where: { $0.objectID == selectedItemID }) else { return }
-        let nextIndex = selectedIndex + 1
-        guard nextIndex < items.count else { return }
-        let nextID = items[nextIndex].objectID
-        let nextFrame = itemFrames[nextID] ?? CGRect(x: 0, y: selectedFrame.maxY, width: 0, height: selectedFrame.height)
-        let threshold = containerHeight - nextFrame.height
-        if selectedFrame.maxY > threshold {
-            proxy.scrollTo(nextID, anchor: .bottom)
+        if let selectedIndex = items.firstIndex(where: { $0.objectID == selectedItemID }) {
+            let nextIndex = selectedIndex + 1
+            let nextFrame = nextIndex < items.count ? itemFrames[items[nextIndex].objectID] : nil
+            if let anchor = FeedItemsView.anchorToRevealSelection(
+                selectedFrame: selectedFrame,
+                nextFrame: nextFrame,
+                containerHeight: containerHeight
+            ) {
+                proxy.scrollTo(selectedItemID, anchor: anchor)
+            }
+            return
+        }
+
+        if let anchor = FeedItemsView.anchorToRevealSelection(
+            selectedFrame: selectedFrame,
+            nextFrame: nil,
+            containerHeight: containerHeight
+        ) {
+            proxy.scrollTo(selectedItemID, anchor: anchor)
         }
     }
 
-    private func ensureCurrentSelectionVisibility() -> Bool {
-        guard let proxy = scrollProxy else { return false }
-        guard let selectedItemID else { return false }
-        guard let selectedFrame = itemFrames[selectedItemID] else { return false }
-        if selectedFrame.minY < 0 {
-            proxy.scrollTo(selectedItemID, anchor: .top)
-            return true
-        }
-        let threshold = containerHeight - selectedFrame.height
-        if selectedFrame.maxY > threshold {
-            proxy.scrollTo(selectedItemID, anchor: .bottom)
-            return true
-        }
-        return false
-    }
-
-    private func handleKey(_ event: NSEvent, visibleItems: [FeedItem]) {
+    private func handleKey(_ event: NSEvent, visibleItems: [FeedItem]) -> Bool {
+        guard shouldHandleKey(event) else { return false }
         switch event.keyCode {
         case 126: // up arrow
             moveSelection(in: visibleItems, delta: -1)
+            return true
         case 125: // down arrow
             moveSelection(in: visibleItems, delta: 1)
+            return true
         default:
             let key = event.charactersIgnoringModifiers?.lowercased()
             if key == "k" {
                 moveSelection(in: visibleItems, delta: -1)
+                return true
             } else if key == "j" {
                 moveSelection(in: visibleItems, delta: 1)
+                return true
+            } else if key == "o" {
+                guard let item = FeedItemsView.openTarget(selectedItemID: selectedItemID, items: visibleItems) else {
+                    return false
+                }
+                openItem(item)
+                return true
+            }
+            return false
+        }
+    }
+
+    private func shouldHandleKey(_ event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection([.command, .option, .control]).isEmpty == false {
+            return false
+        }
+        if let responder = NSApp.keyWindow?.firstResponder {
+            if responder is NSTextView || responder is NSTextField || responder is NSSearchField {
+                return false
             }
         }
+        return true
     }
 }
 
-private struct KeyCaptureView: NSViewRepresentable {
-    let onKeyDown: (NSEvent) -> Void
+extension FeedItemsView {
+    static func itemIdentity(_ item: FeedItem) -> NSManagedObjectID {
+        item.objectID
+    }
 
-    func makeNSView(context: Context) -> KeyCaptureNSView {
-        let view = KeyCaptureNSView()
-        view.onKeyDown = onKeyDown
-        view.focusRingType = .none
+    static func emptyMessage(showRead: Bool) -> String {
+        showRead ? "This feed has no items." : "No unread items. Toggle Show Read to see older items."
+    }
+
+    static func filteredItems(items: [FeedItem], showRead: Bool, sessionUnreadIDs: Set<NSManagedObjectID>) -> [FeedItem] {
+        if showRead {
+            return items
+        }
+        return items.filter { item in
+            !item.isRead || sessionUnreadIDs.contains(item.objectID)
+        }
+    }
+
+    static func nextSelectionIndex(currentIndex: Int?, itemCount: Int, delta: Int) -> Int? {
+        guard itemCount > 0 else { return nil }
+        guard let currentIndex else { return 0 }
+        return max(0, min(itemCount - 1, currentIndex + delta))
+    }
+
+    static func openTarget(selectedItemID: NSManagedObjectID?, items: [FeedItem]) -> FeedItem? {
+        guard let selectedItemID else { return nil }
+        return items.first(where: { $0.objectID == selectedItemID })
+    }
+
+    static func anchorToRevealSelection(selectedFrame: CGRect, nextFrame: CGRect?, containerHeight: CGFloat) -> UnitPoint? {
+        if selectedFrame.minY < 0 {
+            return .top
+        }
+
+        let nextHeight = nextFrame?.height ?? selectedFrame.height
+        let threshold = containerHeight - nextHeight
+        if selectedFrame.maxY > threshold {
+            return .bottom
+        }
+
+        return nil
+    }
+}
+
+private struct KeyMonitorView: NSViewRepresentable {
+    let onKeyDown: (NSEvent) -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onKeyDown: onKeyDown)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.startMonitoring()
         return view
     }
 
-    func updateNSView(_ nsView: KeyCaptureNSView, context: Context) {
-        nsView.onKeyDown = onKeyDown
-        if nsView.window?.firstResponder !== nsView {
-            nsView.window?.makeFirstResponder(nsView)
-        }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onKeyDown = onKeyDown
     }
-}
 
-private final class KeyCaptureNSView: NSView {
-    var onKeyDown: ((NSEvent) -> Void)?
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stopMonitoring()
+    }
 
-    override var acceptsFirstResponder: Bool { true }
+    final class Coordinator {
+        var onKeyDown: (NSEvent) -> Bool
+        private var monitor: Any?
 
-    override func keyDown(with event: NSEvent) {
-        onKeyDown?(event)
+        init(onKeyDown: @escaping (NSEvent) -> Bool) {
+            self.onKeyDown = onKeyDown
+        }
+
+        func startMonitoring() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self else { return event }
+                return self.onKeyDown(event) ? nil : event
+            }
+        }
+
+        func stopMonitoring() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+        }
     }
 }

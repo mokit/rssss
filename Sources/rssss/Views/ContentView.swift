@@ -2,17 +2,11 @@ import SwiftUI
 import CoreData
 
 struct ContentView: View {
-    @Environment(\.managedObjectContext) private var viewContext
     @EnvironmentObject private var feedStore: FeedStore
 
-    @FetchRequest(
-        sortDescriptors: [
-            NSSortDescriptor(keyPath: \Feed.orderIndex, ascending: true),
-            NSSortDescriptor(keyPath: \Feed.title, ascending: true),
-            NSSortDescriptor(keyPath: \Feed.url, ascending: true)
-        ],
-        animation: .default
-    ) private var feeds: FetchedResults<Feed>
+    private let viewContext: NSManagedObjectContext
+    @StateObject private var feedsController: FeedsController
+    @StateObject private var unreadCountsController: UnreadCountsController
 
     @State private var selectedFeedID: NSManagedObjectID?
     @State private var showRead = false
@@ -20,10 +14,14 @@ struct ContentView: View {
     @State private var alertMessage: String?
     @State private var sessionToken = UUID()
 
+    init(viewContext: NSManagedObjectContext) {
+        self.viewContext = viewContext
+        _feedsController = StateObject(wrappedValue: FeedsController(context: viewContext))
+        _unreadCountsController = StateObject(wrappedValue: UnreadCountsController(context: viewContext))
+    }
+
     private var selectedFeed: Feed? {
-        guard let selectedFeedID else { return nil }
-        guard let feed = viewContext.object(with: selectedFeedID) as? Feed else { return nil }
-        return feed.isDeleted ? nil : feed
+        ContentView.resolveSelectedFeed(id: selectedFeedID, in: viewContext)
     }
 
     var body: some View {
@@ -57,35 +55,39 @@ struct ContentView: View {
             Text(alertMessage ?? "Unknown error")
         }
         .onChange(of: selectedFeedID) { _, _ in
-            showRead = false
-            sessionToken = UUID()
+            let nextState = ContentView.stateAfterSelectionChange()
+            showRead = nextState.showRead
+            sessionToken = nextState.sessionToken
         }
     }
 
     private var sidebar: some View {
         FeedSidebarView(
             selection: $selectedFeedID,
-            feeds: Array(feeds),
-            viewContext: viewContext,
+            feeds: feedsController.feeds,
+            unreadCounts: unreadCountsController.counts,
             onDelete: deleteFeed
         )
         .frame(minWidth: 220, idealWidth: 260)
         .task {
-            if selectedFeedID == nil, let first = feeds.first {
-                selectedFeedID = first.objectID
-            }
+            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
         }
-        .onChange(of: feeds.count) { _, _ in
-            if selectedFeedID == nil, let first = feeds.first {
-                selectedFeedID = first.objectID
-            }
+        .onChange(of: feedsController.feeds.count) { _, _ in
+            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
         }
     }
 
     @ViewBuilder
     private var detail: some View {
         if let feed = selectedFeed {
-            FeedItemsView(feedID: feed.id, showRead: showRead, sessionToken: sessionToken)
+            FeedItemsView(
+                feedObjectID: feed.objectID,
+                showRead: showRead,
+                sessionToken: sessionToken,
+                viewContext: viewContext
+            )
+                .id(ContentView.detailIdentity(for: feed))
+                .navigationTitle(feed.displayName)
                 .toolbar {
                     feedToolbar(for: feed)
                 }
@@ -154,10 +156,17 @@ struct ContentView: View {
 
     private func deleteFeed(_ feed: Feed) {
         do {
-            if selectedFeedID == feed.objectID {
-                selectedFeedID = nil
-                showRead = false
-                sessionToken = UUID()
+            guard !feed.isDeleted else { return }
+            let remainingFeeds = feedsController.feeds.filter { $0.objectID != feed.objectID }
+            selectedFeedID = ContentView.selectionAfterDeleting(
+                selected: selectedFeedID,
+                deleting: feed.objectID,
+                remainingFeeds: remainingFeeds
+            )
+            if selectedFeedID == nil {
+                let nextState = ContentView.stateAfterSelectionChange()
+                showRead = nextState.showRead
+                sessionToken = nextState.sessionToken
             }
             try feedStore.deleteFeed(feed)
         } catch {
@@ -173,5 +182,30 @@ struct ContentView: View {
                 alertMessage = error.localizedDescription
             }
         }
+    }
+}
+
+extension ContentView {
+    static func resolveSelectedFeed(id: NSManagedObjectID?, in context: NSManagedObjectContext) -> Feed? {
+        guard let id else { return nil }
+        guard let feed = try? context.existingObject(with: id) as? Feed else { return nil }
+        return feed.isDeleted ? nil : feed
+    }
+
+    static func stateAfterSelectionChange(sessionTokenGenerator: () -> UUID = UUID.init) -> (showRead: Bool, sessionToken: UUID) {
+        (false, sessionTokenGenerator())
+    }
+
+    static func detailIdentity(for feed: Feed?) -> NSManagedObjectID? {
+        feed?.objectID
+    }
+
+    static func nextSelection(current: NSManagedObjectID?, feeds: [Feed]) -> NSManagedObjectID? {
+        current ?? feeds.first?.objectID
+    }
+
+    static func selectionAfterDeleting(selected: NSManagedObjectID?, deleting: NSManagedObjectID, remainingFeeds: [Feed]) -> NSManagedObjectID? {
+        guard selected == deleting else { return selected }
+        return remainingFeeds.first?.objectID
     }
 }

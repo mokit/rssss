@@ -1,6 +1,8 @@
 import CoreData
 
 final class ManagedModel {
+    static let shared = ManagedModel.makeModel()
+
     static func makeModel() -> NSManagedObjectModel {
         let model = NSManagedObjectModel()
 
@@ -183,8 +185,6 @@ final class FeedItem: NSManagedObject {
     @NSManaged var createdAt: Date
     @NSManaged var feed: Feed
 }
-
-extension FeedItem: Identifiable {}
 
 extension FeedItem {
     @nonobjc class func fetchRequest() -> NSFetchRequest<FeedItem> {

@@ -5,21 +5,27 @@ final class PersistenceController: ObservableObject {
     static let shared = PersistenceController()
 
     let container: NSPersistentContainer
+    @Published private(set) var isLoaded = false
 
     init(inMemory: Bool = false) {
-        let model = ManagedModel.makeModel()
+        let model = ManagedModel.shared
         container = NSPersistentContainer(name: "Model", managedObjectModel: model)
+        container.viewContext.persistentStoreCoordinator = container.persistentStoreCoordinator
         if inMemory {
             container.persistentStoreDescriptions.first?.url = URL(fileURLWithPath: "/dev/null")
         }
         container.persistentStoreDescriptions.forEach {
             $0.shouldMigrateStoreAutomatically = true
             $0.shouldInferMappingModelAutomatically = true
+            $0.shouldAddStoreAsynchronously = false
         }
 
         container.loadPersistentStores { _, error in
             if let error {
                 fatalError("Unresolved Core Data error: \(error)")
+            }
+            Task { @MainActor in
+                self.isLoaded = true
             }
         }
         container.viewContext.automaticallyMergesChangesFromParent = true

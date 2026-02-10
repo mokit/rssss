@@ -16,7 +16,7 @@ struct AddFeedSheet: View {
                 .textFieldStyle(.roundedBorder)
 
             if !isValid {
-                Text("Enter a valid http(s) URL.")
+                Text("Enter a valid HTTPS URL (for example: https://example.com/feed.xml).")
                     .foregroundStyle(.red)
                     .font(.caption)
             }
@@ -46,6 +46,6 @@ struct AddFeedSheet: View {
     private func validate(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed) else { return false }
-        return url.scheme?.hasPrefix("http") == true
+        return url.scheme?.lowercased() == "https"
     }
 }

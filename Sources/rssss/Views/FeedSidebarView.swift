@@ -4,7 +4,7 @@ import CoreData
 struct FeedSidebarView: NSViewRepresentable {
     @Binding var selection: NSManagedObjectID?
     let feeds: [Feed]
-    let viewContext: NSManagedObjectContext
+    let unreadCounts: [NSManagedObjectID: Int]
     let onDelete: (Feed) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -44,7 +44,18 @@ struct FeedSidebarView: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         if let tableView = context.coordinator.tableView {
-            tableView.reloadData()
+            let currentIDs = feeds.map(\.objectID)
+            let currentUnreadCounts = unreadCounts
+            if Coordinator.shouldReloadData(
+                currentFeedIDs: currentIDs,
+                previousFeedIDs: context.coordinator.lastFeedIDs,
+                currentUnreadCounts: currentUnreadCounts,
+                previousUnreadCounts: context.coordinator.lastUnreadCounts
+            ) {
+                context.coordinator.lastFeedIDs = currentIDs
+                context.coordinator.lastUnreadCounts = currentUnreadCounts
+                tableView.reloadData()
+            }
             context.coordinator.syncSelection(to: selection)
         }
     }
@@ -52,9 +63,20 @@ struct FeedSidebarView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         var parent: FeedSidebarView
         weak var tableView: NSTableView?
+        fileprivate var lastFeedIDs: [NSManagedObjectID] = []
+        fileprivate var lastUnreadCounts: [NSManagedObjectID: Int] = [:]
 
         init(parent: FeedSidebarView) {
             self.parent = parent
+        }
+
+        static func shouldReloadData(
+            currentFeedIDs: [NSManagedObjectID],
+            previousFeedIDs: [NSManagedObjectID],
+            currentUnreadCounts: [NSManagedObjectID: Int],
+            previousUnreadCounts: [NSManagedObjectID: Int]
+        ) -> Bool {
+            currentFeedIDs != previousFeedIDs || currentUnreadCounts != previousUnreadCounts
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
@@ -62,6 +84,8 @@ struct FeedSidebarView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            guard row >= 0 && row < parent.feeds.count else { return nil }
+
             let identifier = NSUserInterfaceItemIdentifier("FeedCell")
             let view = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
             view.identifier = identifier
@@ -70,9 +94,17 @@ struct FeedSidebarView: NSViewRepresentable {
             let hosting: NSHostingView<FeedRowView>
             if let existing = view.subviews.compactMap({ $0 as? NSHostingView<FeedRowView> }).first {
                 hosting = existing
-                hosting.rootView = FeedRowView(feed: feed)
+                hosting.rootView = FeedRowView(
+                    feed: feed,
+                    unreadCount: parent.unreadCounts[feed.objectID] ?? 0
+                )
             } else {
-                hosting = NSHostingView(rootView: FeedRowView(feed: feed))
+                hosting = NSHostingView(
+                    rootView: FeedRowView(
+                        feed: feed,
+                        unreadCount: parent.unreadCounts[feed.objectID] ?? 0
+                    )
+                )
                 hosting.translatesAutoresizingMaskIntoConstraints = false
                 view.addSubview(hosting)
                 NSLayoutConstraint.activate([
