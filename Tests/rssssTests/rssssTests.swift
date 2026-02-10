@@ -237,6 +237,9 @@ final class rssssTests: XCTestCase {
 
     func testSidebarPaneUsesSystemSidebarMaterial() {
         XCTAssertEqual(SidebarPaneView.sidebarMaterial, .sidebar)
+        XCTAssertEqual(SidebarPaneView.sidebarOpacity, 0.96)
+        XCTAssertEqual(SidebarPaneView.blurOverlayMaterial, .underWindowBackground)
+        XCTAssertEqual(SidebarPaneView.blurOverlayOpacity, 0.34)
     }
 
     @MainActor

@@ -83,5 +83,7 @@ private final class ConfigurationView: NSView {
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
     }
 }

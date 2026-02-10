@@ -27,19 +27,7 @@ struct ContentView: View {
 
     var body: some View {
         HSplitView {
-            SidebarPaneView(
-                selection: $selectedFeedID,
-                feeds: feedsController.feeds,
-                unreadCounts: unreadCountsController.counts,
-                onDelete: deleteFeed,
-                onAdd: { isAddSheetPresented = true }
-            )
-                .task {
-                    selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
-                }
-                .onChange(of: feedsController.feeds.count) { _, _ in
-                    selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
-                }
+            sidebarPane
                 .frame(
                     minWidth: ContentView.sidebarMinWidth,
                     idealWidth: ContentView.sidebarIdealWidth,
@@ -74,6 +62,22 @@ struct ContentView: View {
             let nextState = ContentView.stateAfterSelectionChange()
             showRead = nextState.showRead
             sessionToken = nextState.sessionToken
+        }
+    }
+
+    private var sidebarPane: some View {
+        SidebarPaneView(
+            selection: $selectedFeedID,
+            feeds: feedsController.feeds,
+            unreadCounts: unreadCountsController.counts,
+            onDelete: deleteFeed,
+            onAdd: { isAddSheetPresented = true }
+        )
+        .task {
+            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+        }
+        .onChange(of: feedsController.feeds.count) { _, _ in
+            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
         }
     }
 

@@ -5,20 +5,21 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Feed Refresh") {
-                Stepper(value: $settingsStore.refreshIntervalMinutes, in: RefreshSettings.minimumRefreshIntervalMinutes...RefreshSettings.maximumRefreshIntervalMinutes) {
-                    HStack {
-                        Text("Refresh every")
-                        Text("\(settingsStore.refreshIntervalMinutes) min")
-                            .monospacedDigit()
-                    }
+            Section {
+                HStack {
+                    Text("Refresh feeds every")
+                    Stepper(
+                        "",
+                        value: $settingsStore.refreshIntervalMinutes,
+                        in: RefreshSettings.minimumRefreshIntervalMinutes...RefreshSettings.maximumRefreshIntervalMinutes
+                    )
+                    .labelsHidden()
+                    Text("\(settingsStore.refreshIntervalMinutes) min")
+                        .monospacedDigit()
                 }
-                Text("Choose how often feeds are refreshed automatically in the foreground and in the background.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
             Section("Display") {
-                Toggle("Show Last Refresh in Feed Header", isOn: $settingsStore.showLastRefresh)
+                Toggle("Show last refresh time per feed", isOn: $settingsStore.showLastRefresh)
             }
         }
         .padding(20)
