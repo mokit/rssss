@@ -56,6 +56,11 @@ struct FeedItemsView: View {
                                     onView: { openItem(item) }
                                 )
                                     .id(item.objectID)
+                                    .onTapGesture(count: 2) {
+                                        selectionChangedByKeyboard = false
+                                        selectedItemID = item.objectID
+                                        openItem(item)
+                                    }
                                     .onTapGesture {
                                         selectionChangedByKeyboard = false
                                         selectedItemID = item.objectID
