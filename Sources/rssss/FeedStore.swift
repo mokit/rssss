@@ -1,6 +1,7 @@
 import Foundation
 import CoreData
 import FeedKit
+import os.log
 
 struct ParsedFeed {
     var title: String?
@@ -20,10 +21,21 @@ struct ParsedItem {
 final class FeedStore: ObservableObject {
     @Published var isRefreshing = false
 
-    private let persistence: PersistenceController
+    private static let logger = Logger(subsystem: "rssss", category: "network")
+    private static let requestTimeout: TimeInterval = 15
+    private static let resourceTimeout: TimeInterval = 30
+    private static let maxNetworkAttempts = 3
+    private static let backoffDelaysNanos: [UInt64] = [
+        300_000_000,
+        900_000_000
+    ]
 
-    init(persistence: PersistenceController) {
+    private let persistence: PersistenceController
+    private let urlSession: URLSession
+
+    init(persistence: PersistenceController, urlSession: URLSession? = nil) {
         self.persistence = persistence
+        self.urlSession = urlSession ?? FeedStore.makeURLSession()
     }
 
     func addFeed(urlString: String) throws -> Feed {
@@ -67,7 +79,7 @@ final class FeedStore: ObservableObject {
 
         let data: Data
         do {
-            (data, _) = try await URLSession.shared.data(from: url)
+            data = try await fetchFeedData(from: url)
         } catch let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection {
             throw FeedError.insecureURL
         }
@@ -131,6 +143,69 @@ final class FeedStore: ObservableObject {
                 try context.save()
             }
         }
+    }
+
+    private func fetchFeedData(from url: URL) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = Self.requestTimeout
+
+        var attempt = 0
+        while true {
+            do {
+                let (data, _) = try await urlSession.data(for: request)
+                if attempt > 0 {
+                    Self.logger.info("Recovered feed request after retry for \(url.absoluteString, privacy: .public)")
+                }
+                return data
+            } catch let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection {
+                throw error
+            } catch let error as URLError where shouldRetry(error) && attempt < Self.maxNetworkAttempts - 1 {
+                Self.logger.error(
+                    "Feed request transient failure for \(url.absoluteString, privacy: .public), attempt \(attempt + 1)/\(Self.maxNetworkAttempts), code \(error.code.rawValue): \(error.localizedDescription, privacy: .public)"
+                )
+                if attempt < Self.backoffDelaysNanos.count {
+                    try await Task.sleep(nanoseconds: Self.backoffDelaysNanos[attempt])
+                }
+                attempt += 1
+                continue
+            } catch {
+                if let urlError = error as? URLError {
+                    Self.logger.error(
+                        "Feed request failed for \(url.absoluteString, privacy: .public), code \(urlError.code.rawValue): \(urlError.localizedDescription, privacy: .public)"
+                    )
+                } else {
+                    Self.logger.error(
+                        "Feed request failed for \(url.absoluteString, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                }
+                throw error
+            }
+        }
+    }
+
+    private func shouldRetry(_ error: URLError) -> Bool {
+        switch error.code {
+        case .timedOut,
+                .networkConnectionLost,
+                .cannotConnectToHost,
+                .cannotFindHost,
+                .dnsLookupFailed,
+                .notConnectedToInternet,
+                .internationalRoamingOff,
+                .callIsActive,
+                .dataNotAllowed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func makeURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
+        configuration.waitsForConnectivity = true
+        return URLSession(configuration: configuration)
     }
 
     func refreshAllFeeds() async {
