@@ -38,7 +38,7 @@ final class UnreadCountsController: NSObject, ObservableObject, @preconcurrency 
 
     init(context: NSManagedObjectContext) {
         let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
-        request.predicate = NSPredicate(format: "isRead == NO")
+        request.predicate = NSPredicate(format: "isRead == NO OR isRead == NIL")
         request.sortDescriptors = [
             NSSortDescriptor(keyPath: \FeedItem.createdAt, ascending: false)
         ]

@@ -14,6 +14,9 @@ struct ContentView: View {
     @State private var isAddSheetPresented = false
     @State private var alertMessage: String?
     @State private var sessionToken = UUID()
+    @State private var detailReloadToken = UUID()
+    @State private var isDetailBinding = false
+    @State private var boundDetailFeedID: NSManagedObjectID?
 
     init(viewContext: NSManagedObjectContext) {
         self.viewContext = viewContext
@@ -62,6 +65,9 @@ struct ContentView: View {
             let nextState = ContentView.stateAfterSelectionChange()
             showRead = nextState.showRead
             sessionToken = nextState.sessionToken
+            isDetailBinding = selectedFeedID != nil
+            boundDetailFeedID = nil
+            detailReloadToken = UUID()
         }
     }
 
@@ -97,9 +103,14 @@ struct ContentView: View {
                     feedObjectID: feed.objectID,
                     showRead: showRead,
                     sessionToken: sessionToken,
-                    viewContext: viewContext
+                    viewContext: viewContext,
+                    onFeedBound: { boundFeedID in
+                        guard boundFeedID == selectedFeedID else { return }
+                        boundDetailFeedID = boundFeedID
+                        isDetailBinding = false
+                    }
                 )
-                .id(ContentView.detailIdentity(for: feed))
+                .id("\(feed.objectID.uriRepresentation().absoluteString)#\(detailReloadToken.uuidString)")
             }
         } else {
             VStack {
@@ -115,7 +126,13 @@ struct ContentView: View {
     }
 
     private func detailHeader(for feed: Feed) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        let canMarkAll = ContentView.isMarkAllEnabled(
+            displayedFeedID: feed.objectID,
+            boundDetailFeedID: boundDetailFeedID,
+            isDetailBinding: isDetailBinding
+        )
+
+        return HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(feed.displayName)
                     .font(.title2.weight(.semibold))
@@ -140,7 +157,21 @@ struct ContentView: View {
                 Button {
                     Task {
                         do {
-                            try await feedStore.markAllRead(feed: feed)
+                            guard let targetFeedID = ContentView.markAllTargetFeedID(
+                                displayedFeedID: feed.objectID,
+                                boundDetailFeedID: boundDetailFeedID,
+                                isDetailBinding: isDetailBinding
+                            ) else {
+                                return
+                            }
+
+                            try await feedStore.markAllRead(feedObjectID: targetFeedID)
+                            let nextState = ContentView.stateAfterSelectionChange()
+                            showRead = nextState.showRead
+                            sessionToken = nextState.sessionToken
+                            isDetailBinding = true
+                            boundDetailFeedID = nil
+                            detailReloadToken = UUID()
                         } catch {
                             alertMessage = error.localizedDescription
                         }
@@ -149,6 +180,7 @@ struct ContentView: View {
                     Image(systemName: "checkmark.circle")
                 }
                 .help("Mark all items in this feed as read")
+                .disabled(!canMarkAll)
 
                 Button {
                     showRead.toggle()
@@ -220,6 +252,30 @@ extension ContentView {
 
     static func detailIdentity(for feed: Feed?) -> NSManagedObjectID? {
         feed?.objectID
+    }
+
+    static func isMarkAllEnabled(
+        displayedFeedID: NSManagedObjectID?,
+        boundDetailFeedID: NSManagedObjectID?,
+        isDetailBinding: Bool
+    ) -> Bool {
+        guard !isDetailBinding, let displayedFeedID else { return false }
+        return boundDetailFeedID == displayedFeedID
+    }
+
+    static func markAllTargetFeedID(
+        displayedFeedID: NSManagedObjectID?,
+        boundDetailFeedID: NSManagedObjectID?,
+        isDetailBinding: Bool
+    ) -> NSManagedObjectID? {
+        guard isMarkAllEnabled(
+            displayedFeedID: displayedFeedID,
+            boundDetailFeedID: boundDetailFeedID,
+            isDetailBinding: isDetailBinding
+        ) else {
+            return nil
+        }
+        return displayedFeedID
     }
 
     static func lastRefreshLabel(lastRefreshedAt: Date?, formatter: DateFormatter = ContentView.lastRefreshFormatter) -> String {

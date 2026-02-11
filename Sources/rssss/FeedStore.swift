@@ -283,23 +283,41 @@ final class FeedStore: ObservableObject {
     }
 
     func markAllRead(feed: Feed) async throws {
+        try await markAllRead(feedObjectID: feed.objectID)
+    }
+
+    func markAllRead(feedObjectID: NSManagedObjectID) async throws {
         let container = persistence.container
-        let feedObjectID = feed.objectID
         let context = container.newBackgroundContext()
         context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
 
-        try await context.perform {
-            guard let backgroundFeed = try? context.existingObject(with: feedObjectID) as? Feed else { return }
-            let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
-            request.predicate = NSPredicate(format: "feed == %@ AND isRead == NO", backgroundFeed)
-            let unreadItems = (try? context.fetch(request)) ?? []
-            for item in unreadItems {
-                item.isRead = true
-            }
-            if context.hasChanges {
-                try context.save()
+        let updatedObjectIDs: [NSManagedObjectID] = try await withCheckedThrowingContinuation { continuation in
+            context.perform {
+                do {
+                    guard let backgroundFeed = try? context.existingObject(with: feedObjectID) as? Feed else {
+                        continuation.resume(returning: [])
+                        return
+                    }
+
+                    let batchUpdate = NSBatchUpdateRequest(entityName: "FeedItem")
+                    batchUpdate.predicate = NSPredicate(format: "feed == %@", backgroundFeed)
+                    batchUpdate.propertiesToUpdate = ["isRead": true]
+                    batchUpdate.resultType = .updatedObjectIDsResultType
+
+                    let result = try context.execute(batchUpdate) as? NSBatchUpdateResult
+                    let objectIDs = result?.result as? [NSManagedObjectID] ?? []
+                    continuation.resume(returning: objectIDs)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
+
+        guard !updatedObjectIDs.isEmpty else { return }
+        NSManagedObjectContext.mergeChanges(
+            fromRemoteContextSave: [NSUpdatedObjectsKey: updatedObjectIDs],
+            into: [container.viewContext]
+        )
     }
 
     private func nextOrderIndex(in context: NSManagedObjectContext) -> Int64 {

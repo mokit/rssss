@@ -7,6 +7,7 @@ struct FeedItemsView: View {
     let feedObjectID: NSManagedObjectID
     let showRead: Bool
     let sessionToken: UUID
+    let onFeedBound: (NSManagedObjectID) -> Void
 
     @StateObject private var readMarker = ReadMarker(persistence: PersistenceController.shared)
     @StateObject private var itemsController: FeedItemsController
@@ -18,104 +19,118 @@ struct FeedItemsView: View {
     @State private var selectionChangedByKeyboard = false
     @State private var scrollProxy: ScrollViewProxy?
 
-    init(feedObjectID: NSManagedObjectID, showRead: Bool, sessionToken: UUID, viewContext: NSManagedObjectContext) {
+    init(
+        feedObjectID: NSManagedObjectID,
+        showRead: Bool,
+        sessionToken: UUID,
+        viewContext: NSManagedObjectContext,
+        onFeedBound: @escaping (NSManagedObjectID) -> Void
+    ) {
         self.feedObjectID = feedObjectID
         self.showRead = showRead
         self.sessionToken = sessionToken
         self.viewContext = viewContext
+        self.onFeedBound = onFeedBound
         _itemsController = StateObject(wrappedValue: FeedItemsController(context: viewContext, feedObjectID: feedObjectID))
     }
 
     var body: some View {
         let visibleItems = filteredItems(from: itemsController.items)
 
-        if visibleItems.isEmpty {
-            VStack(spacing: 12) {
-                Image("RSSSSLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 56, height: 56)
-                    .foregroundStyle(.secondary)
-                Text("No Items")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(FeedItemsView.emptyMessage(showRead: showRead))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollViewReader { proxy in
-                VStack(spacing: 0) {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(visibleItems, id: \.objectID) { item in
-                                ItemRowView(
-                                    item: item,
-                                    isSelected: item.objectID == selectedItemID,
-                                    onView: { openItem(item) }
-                                )
-                                    .id(item.objectID)
-                                    .onTapGesture(count: 2) {
-                                        selectionChangedByKeyboard = false
-                                        selectedItemID = item.objectID
-                                        openItem(item)
-                                    }
-                                    .onTapGesture {
-                                        selectionChangedByKeyboard = false
-                                        selectedItemID = item.objectID
-                                    }
-                                    .background(
-                                        GeometryReader { proxy in
-                                            Color.clear.preference(
-                                                key: ItemFramePreferenceKey.self,
-                                                value: [item.objectID: proxy.frame(in: .named("itemsScroll"))]
-                                            )
-                                        }
+        Group {
+            if visibleItems.isEmpty {
+                VStack(spacing: 12) {
+                    Image("RSSSSLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 56, height: 56)
+                        .foregroundStyle(.secondary)
+                    Text("No Items")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(FeedItemsView.emptyMessage(showRead: showRead))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    VStack(spacing: 0) {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(visibleItems, id: \.objectID) { item in
+                                    ItemRowView(
+                                        item: item,
+                                        isSelected: item.objectID == selectedItemID,
+                                        onView: { openItem(item) }
                                     )
-                                Divider()
+                                        .id(item.objectID)
+                                        .onTapGesture(count: 2) {
+                                            selectionChangedByKeyboard = false
+                                            selectedItemID = item.objectID
+                                            openItem(item)
+                                        }
+                                        .onTapGesture {
+                                            selectionChangedByKeyboard = false
+                                            selectedItemID = item.objectID
+                                        }
+                                        .background(
+                                            GeometryReader { proxy in
+                                                Color.clear.preference(
+                                                    key: ItemFramePreferenceKey.self,
+                                                    value: [item.objectID: proxy.frame(in: .named("itemsScroll"))]
+                                                )
+                                            }
+                                        )
+                                    Divider()
+                                }
                             }
+                            .padding(.vertical, 8)
                         }
-                        .padding(.vertical, 8)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .onAppear { containerHeight = proxy.size.height }
+                                    .onChange(of: proxy.size.height) { _, newValue in
+                                        containerHeight = newValue
+                                    }
+                            }
+                        )
+                        .coordinateSpace(name: "itemsScroll")
+                        .onPreferenceChange(ItemFramePreferenceKey.self) { frames in
+                            itemFrames = frames
+                            guard !suppressReadTracking else { return }
+                            let ids = ReadTracker.itemsToMarkRead(itemFrames: frames, containerMinY: 0)
+                            readMarker.queue(ids)
+                        }
+                        .onChange(of: selectedItemID) { _, _ in
+                            guard selectionChangedByKeyboard else { return }
+                            ensureSelectionVisibility(in: visibleItems, proxy: proxy)
+                            selectionChangedByKeyboard = false
+                        }
+                    }
+                    .onAppear {
+                        scrollProxy = proxy
                     }
                     .background(
-                        GeometryReader { proxy in
-                            Color.clear
-                                .onAppear { containerHeight = proxy.size.height }
-                                .onChange(of: proxy.size.height) { _, newValue in
-                                    containerHeight = newValue
-                                }
+                        KeyMonitorView { event in
+                            handleKey(event, visibleItems: visibleItems)
                         }
                     )
-                    .coordinateSpace(name: "itemsScroll")
-                    .onPreferenceChange(ItemFramePreferenceKey.self) { frames in
-                        itemFrames = frames
-                        guard !suppressReadTracking else { return }
-                        let ids = ReadTracker.itemsToMarkRead(itemFrames: frames, containerMinY: 0)
-                        readMarker.queue(ids)
-                    }
-                    .onChange(of: selectedItemID) { _, _ in
-                        guard selectionChangedByKeyboard else { return }
-                        ensureSelectionVisibility(in: visibleItems, proxy: proxy)
-                        selectionChangedByKeyboard = false
-                    }
                 }
-                .onAppear {
-                    scrollProxy = proxy
-                }
-                .background(
-                    KeyMonitorView { event in
-                        handleKey(event, visibleItems: visibleItems)
-                    }
-                )
             }
-            
+        }
+        .task(id: feedObjectID) {
+            onFeedBound(feedObjectID)
+        }
         .task(id: sessionToken) {
-                sessionUnreadIDs = Set(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
-            }
-            .onChange(of: itemsController.items.map { $0.objectID }) { _, _ in
-                sessionUnreadIDs.formUnion(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
-            }
+            sessionUnreadIDs = Set(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
+        }
+        .onChange(of: FeedItemsView.sessionUnreadSnapshot(items: itemsController.items)) { _, _ in
+            sessionUnreadIDs = FeedItemsView.nextSessionUnreadIDs(
+                current: sessionUnreadIDs,
+                items: itemsController.items
+            )
         }
     }
 
@@ -244,6 +259,11 @@ struct FeedItemsView: View {
 }
 
 extension FeedItemsView {
+    struct SessionUnreadSnapshot: Equatable {
+        let objectID: NSManagedObjectID
+        let isRead: Bool
+    }
+
     static func itemIdentity(_ item: FeedItem) -> NSManagedObjectID {
         item.objectID
     }
@@ -259,6 +279,18 @@ extension FeedItemsView {
         return items.filter { item in
             !item.isRead || sessionUnreadIDs.contains(item.objectID)
         }
+    }
+
+    static func sessionUnreadSnapshot(items: [FeedItem]) -> [SessionUnreadSnapshot] {
+        items.map { SessionUnreadSnapshot(objectID: $0.objectID, isRead: $0.isRead) }
+    }
+
+    static func nextSessionUnreadIDs(current: Set<NSManagedObjectID>, items: [FeedItem]) -> Set<NSManagedObjectID> {
+        let unreadIDs = Set(items.filter { !$0.isRead }.map { $0.objectID })
+        if unreadIDs.isEmpty {
+            return []
+        }
+        return current.union(unreadIDs)
     }
 
     static func nextSelectionIndex(currentIndex: Int?, itemCount: Int, delta: Int) -> Int? {

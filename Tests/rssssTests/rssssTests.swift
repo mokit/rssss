@@ -219,6 +219,103 @@ final class rssssTests: XCTestCase {
         XCTAssertNotEqual(stateA.sessionToken, stateB.sessionToken)
     }
 
+    @MainActor
+    func testContentViewMarkAllDisabledWhileDetailBinding() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+        try? context.save()
+
+        XCTAssertFalse(
+            ContentView.isMarkAllEnabled(
+                displayedFeedID: feed.objectID,
+                boundDetailFeedID: feed.objectID,
+                isDetailBinding: true
+            )
+        )
+    }
+
+    @MainActor
+    func testContentViewMarkAllDisabledWhenBoundFeedMismatchesDisplayedFeed() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feedA = Feed(context: context)
+        feedA.id = UUID()
+        feedA.url = "https://a.example.com"
+
+        let feedB = Feed(context: context)
+        feedB.id = UUID()
+        feedB.url = "https://b.example.com"
+        try? context.save()
+
+        XCTAssertFalse(
+            ContentView.isMarkAllEnabled(
+                displayedFeedID: feedA.objectID,
+                boundDetailFeedID: feedB.objectID,
+                isDetailBinding: false
+            )
+        )
+    }
+
+    @MainActor
+    func testContentViewMarkAllEnabledWhenBoundFeedMatchesDisplayedFeed() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+        try? context.save()
+
+        XCTAssertTrue(
+            ContentView.isMarkAllEnabled(
+                displayedFeedID: feed.objectID,
+                boundDetailFeedID: feed.objectID,
+                isDetailBinding: false
+            )
+        )
+    }
+
+    @MainActor
+    func testContentViewMarkAllTargetUsesBoundFeedAfterRapidSwitch() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feedA = Feed(context: context)
+        feedA.id = UUID()
+        feedA.url = "https://a.example.com"
+
+        let feedB = Feed(context: context)
+        feedB.id = UUID()
+        feedB.url = "https://b.example.com"
+        try? context.save()
+
+        let targetBeforeSwitch = ContentView.markAllTargetFeedID(
+            displayedFeedID: feedA.objectID,
+            boundDetailFeedID: feedA.objectID,
+            isDetailBinding: false
+        )
+        XCTAssertEqual(targetBeforeSwitch, feedA.objectID)
+
+        let targetDuringSwitch = ContentView.markAllTargetFeedID(
+            displayedFeedID: feedB.objectID,
+            boundDetailFeedID: nil,
+            isDetailBinding: true
+        )
+        XCTAssertNil(targetDuringSwitch)
+
+        let targetAfterSwitch = ContentView.markAllTargetFeedID(
+            displayedFeedID: feedB.objectID,
+            boundDetailFeedID: feedB.objectID,
+            isDetailBinding: false
+        )
+        XCTAssertEqual(targetAfterSwitch, feedB.objectID)
+    }
+
     func testContentViewSidebarPaneWidths() {
         XCTAssertEqual(ContentView.sidebarMinWidth, 220)
         XCTAssertEqual(ContentView.sidebarIdealWidth, 260)
@@ -413,6 +510,34 @@ final class rssssTests: XCTestCase {
     }
 
     @MainActor
+    func testMarkAllReadMarksEveryUnreadItemInLargeFeed() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let store = FeedStore(persistence: persistence)
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com/large"
+
+        let unreadItemCount = 300
+        for offset in 0..<unreadItemCount {
+            let item = FeedItem(context: context)
+            item.id = UUID()
+            item.createdAt = Date().addingTimeInterval(TimeInterval(offset))
+            item.feed = feed
+            item.isRead = false
+        }
+        try? context.save()
+
+        try? await store.markAllRead(feedObjectID: feed.objectID)
+
+        let unreadRequest: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
+        unreadRequest.predicate = NSPredicate(format: "feed == %@ AND isRead == NO", feed)
+        let remainingUnread = (try? context.fetch(unreadRequest).count) ?? -1
+        XCTAssertEqual(remainingUnread, 0)
+    }
+
+    @MainActor
     func testSelectionAfterDeletingSelectedFeedPicksNextRemainingFeed() {
         let persistence = PersistenceController(inMemory: true)
         let context = persistence.container.viewContext
@@ -532,6 +657,30 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(FeedItemsView.nextSelectionIndex(currentIndex: nil, itemCount: 3, delta: 1), 0)
         XCTAssertEqual(FeedItemsView.nextSelectionIndex(currentIndex: 0, itemCount: 3, delta: -1), 0)
         XCTAssertEqual(FeedItemsView.nextSelectionIndex(currentIndex: 1, itemCount: 3, delta: 1), 2)
+    }
+
+    @MainActor
+    func testFeedItemsSessionUnreadIDsClearsWhenAllItemsRead() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.isRead = true
+        try? context.save()
+
+        let next = FeedItemsView.nextSessionUnreadIDs(
+            current: [item.objectID],
+            items: [item]
+        )
+
+        XCTAssertTrue(next.isEmpty)
     }
 
     func testAnchorToRevealSelectionTopWhenAboveViewport() {
