@@ -90,6 +90,7 @@ struct FeedItemsView: View {
                                         isSelected: item.objectID == selectedItemID,
                                         sourceLabel: nil,
                                         onView: { openItem(item) },
+                                        onMarkRead: { markItemRead(item) },
                                         onToggleStar: { onToggleStar(item.objectID) }
                                     )
                                         .id(item.objectID)
@@ -251,6 +252,15 @@ struct FeedItemsView: View {
             }
         }
         readMarker.queue([objectID])
+    }
+
+    private func markItemRead(_ item: FeedItem) {
+        guard !item.isRead else { return }
+        item.isRead = true
+        if viewContext.hasChanges {
+            try? viewContext.save()
+        }
+        readMarker.queue([item.objectID])
     }
 
     private func suspendReadTracking() {

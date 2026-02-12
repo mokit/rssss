@@ -5,6 +5,7 @@ struct ItemRowView: View {
     let isSelected: Bool
     let sourceLabel: String?
     let onView: () -> Void
+    let onMarkRead: () -> Void
     let onToggleStar: () -> Void
 
     var body: some View {
@@ -46,6 +47,13 @@ struct ItemRowView: View {
                 .help(item.isStarred ? "Unstar item" : "Star item")
 
                 Spacer()
+                Button("Mark as read") {
+                    onMarkRead()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(item.isRead)
+
                 Button("View") {
                     onView()
                 }
