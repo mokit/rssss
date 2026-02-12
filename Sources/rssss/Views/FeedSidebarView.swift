@@ -3,9 +3,10 @@ import CoreData
 import AppKit
 
 struct FeedSidebarView: View {
-    @Binding var selection: NSManagedObjectID?
+    @Binding var selection: SidebarSelection?
     let feeds: [Feed]
     let unreadCounts: [NSManagedObjectID: Int]
+    let starredCount: Int
     let onDelete: (Feed) -> Void
     let onAddFeed: () -> Void
     let onAddOPML: () -> Void
@@ -20,6 +21,7 @@ struct FeedSidebarView: View {
                 selection: $selection,
                 feeds: feeds,
                 unreadCounts: unreadCounts,
+                starredCount: starredCount,
                 onDelete: onDelete
             )
 
@@ -41,9 +43,10 @@ struct FeedSidebarView: View {
 }
 
 struct FeedSidebarTableView: NSViewRepresentable {
-    @Binding var selection: NSManagedObjectID?
+    @Binding var selection: SidebarSelection?
     let feeds: [Feed]
     let unreadCounts: [NSManagedObjectID: Int]
+    let starredCount: Int
     let onDelete: (Feed) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -89,10 +92,13 @@ struct FeedSidebarTableView: NSViewRepresentable {
                 currentFeedIDs: currentIDs,
                 previousFeedIDs: context.coordinator.lastFeedIDs,
                 currentUnreadCounts: currentUnreadCounts,
-                previousUnreadCounts: context.coordinator.lastUnreadCounts
+                previousUnreadCounts: context.coordinator.lastUnreadCounts,
+                currentStarredCount: starredCount,
+                previousStarredCount: context.coordinator.lastStarredCount
             ) {
                 context.coordinator.lastFeedIDs = currentIDs
                 context.coordinator.lastUnreadCounts = currentUnreadCounts
+                context.coordinator.lastStarredCount = starredCount
                 tableView.reloadData()
             }
             context.coordinator.syncSelection(to: selection)
@@ -104,6 +110,7 @@ struct FeedSidebarTableView: NSViewRepresentable {
         weak var tableView: NSTableView?
         fileprivate var lastFeedIDs: [NSManagedObjectID] = []
         fileprivate var lastUnreadCounts: [NSManagedObjectID: Int] = [:]
+        fileprivate var lastStarredCount: Int = -1
 
         init(parent: FeedSidebarTableView) {
             self.parent = parent
@@ -113,37 +120,46 @@ struct FeedSidebarTableView: NSViewRepresentable {
             currentFeedIDs: [NSManagedObjectID],
             previousFeedIDs: [NSManagedObjectID],
             currentUnreadCounts: [NSManagedObjectID: Int],
-            previousUnreadCounts: [NSManagedObjectID: Int]
+            previousUnreadCounts: [NSManagedObjectID: Int],
+            currentStarredCount: Int,
+            previousStarredCount: Int
         ) -> Bool {
-            currentFeedIDs != previousFeedIDs || currentUnreadCounts != previousUnreadCounts
+            currentFeedIDs != previousFeedIDs ||
+            currentUnreadCounts != previousUnreadCounts ||
+            currentStarredCount != previousStarredCount
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.feeds.count
+            parent.feeds.count + 1
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row >= 0 && row < parent.feeds.count else { return nil }
+            guard let rowKind = rowKind(for: row) else { return nil }
 
             let identifier = NSUserInterfaceItemIdentifier("FeedCell")
             let view = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
             view.identifier = identifier
 
-            let feed = parent.feeds[row]
-            let hosting: NSHostingView<FeedRowView>
-            if let existing = view.subviews.compactMap({ $0 as? NSHostingView<FeedRowView> }).first {
-                hosting = existing
-                hosting.rootView = FeedRowView(
-                    feed: feed,
-                    unreadCount: parent.unreadCounts[feed.objectID] ?? 0
-                )
-            } else {
-                hosting = NSHostingView(
-                    rootView: FeedRowView(
+            let rootView: AnyView
+            switch rowKind {
+            case .starred:
+                rootView = AnyView(StarredRowView(starredCount: parent.starredCount))
+            case .feed(let feedIndex):
+                let feed = parent.feeds[feedIndex]
+                rootView = AnyView(
+                    FeedRowView(
                         feed: feed,
                         unreadCount: parent.unreadCounts[feed.objectID] ?? 0
                     )
                 )
+            }
+
+            let hosting: NSHostingView<AnyView>
+            if let existing = view.subviews.compactMap({ $0 as? NSHostingView<AnyView> }).first {
+                hosting = existing
+                hosting.rootView = rootView
+            } else {
+                hosting = NSHostingView(rootView: rootView)
                 hosting.translatesAutoresizingMaskIntoConstraints = false
                 view.addSubview(hosting)
                 NSLayoutConstraint.activate([
@@ -160,17 +176,27 @@ struct FeedSidebarTableView: NSViewRepresentable {
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard let tableView = tableView else { return }
             let row = tableView.selectedRow
-            if row >= 0 && row < parent.feeds.count {
-                parent.selection = parent.feeds[row].objectID
-            } else {
+            switch rowKind(for: row) {
+            case .some(.starred):
+                parent.selection = .starred
+            case .some(.feed(let feedIndex)):
+                parent.selection = .feed(parent.feeds[feedIndex].objectID)
+            case .none:
                 parent.selection = nil
             }
         }
 
-        func syncSelection(to selection: NSManagedObjectID?) {
+        func syncSelection(to selection: SidebarSelection?) {
             guard let tableView = tableView else { return }
-            if let selection, let row = parent.feeds.firstIndex(where: { $0.objectID == selection }) {
-                if tableView.selectedRow != row {
+            if let selection {
+                let row: Int?
+                switch selection {
+                case .starred:
+                    row = 0
+                case .feed(let objectID):
+                    row = parent.feeds.firstIndex(where: { $0.objectID == objectID }).map { $0 + 1 }
+                }
+                if let row, tableView.selectedRow != row {
                     tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
                 }
             } else if tableView.selectedRow != -1 {
@@ -182,18 +208,31 @@ struct FeedSidebarTableView: NSViewRepresentable {
             menu.removeAllItems()
             guard let tableView = tableView else { return }
             let row = tableView.clickedRow
-            guard row >= 0 && row < parent.feeds.count else { return }
+            guard case .feed(let feedIndex) = rowKind(for: row) else { return }
 
             let deleteItem = NSMenuItem(title: "Remove Feed", action: #selector(deleteFeed(_:)), keyEquivalent: "")
-            deleteItem.representedObject = row
+            deleteItem.representedObject = feedIndex
             deleteItem.target = self
             menu.addItem(deleteItem)
         }
 
         @objc private func deleteFeed(_ sender: NSMenuItem) {
-            guard let row = sender.representedObject as? Int else { return }
-            guard row >= 0 && row < parent.feeds.count else { return }
-            parent.onDelete(parent.feeds[row])
+            guard let feedIndex = sender.representedObject as? Int else { return }
+            guard feedIndex >= 0 && feedIndex < parent.feeds.count else { return }
+            parent.onDelete(parent.feeds[feedIndex])
+        }
+
+        private enum RowKind {
+            case starred
+            case feed(Int)
+        }
+
+        private func rowKind(for row: Int) -> RowKind? {
+            guard row >= 0 else { return nil }
+            if row == 0 { return .starred }
+            let feedIndex = row - 1
+            guard feedIndex < parent.feeds.count else { return nil }
+            return .feed(feedIndex)
         }
     }
 }
@@ -205,5 +244,22 @@ extension FeedSidebarView {
 private final class NoKeyboardTableView: NSTableView {
     override func keyDown(with event: NSEvent) {
         // Disable keyboard navigation in the sidebar.
+    }
+}
+
+private struct StarredRowView: View {
+    let starredCount: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "star.fill")
+            Text("Starred")
+                .lineLimit(1)
+            if starredCount > 0 {
+                Text("(\(starredCount))")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }

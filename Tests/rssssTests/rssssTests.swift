@@ -466,7 +466,9 @@ final class rssssTests: XCTestCase {
             currentFeedIDs: [feedID],
             previousFeedIDs: [feedID],
             currentUnreadCounts: [feedID: 2],
-            previousUnreadCounts: [feedID: 1]
+            previousUnreadCounts: [feedID: 1],
+            currentStarredCount: 0,
+            previousStarredCount: 0
         )
 
         XCTAssertTrue(shouldReload)
@@ -489,7 +491,9 @@ final class rssssTests: XCTestCase {
             currentFeedIDs: [feedID],
             previousFeedIDs: [feedID],
             currentUnreadCounts: unreadCounts,
-            previousUnreadCounts: unreadCounts
+            previousUnreadCounts: unreadCounts,
+            currentStarredCount: 0,
+            previousStarredCount: 0
         )
 
         XCTAssertFalse(shouldReload)
@@ -513,7 +517,9 @@ final class rssssTests: XCTestCase {
             currentFeedIDs: [feedA.objectID, feedB.objectID],
             previousFeedIDs: [feedA.objectID],
             currentUnreadCounts: [:],
-            previousUnreadCounts: [:]
+            previousUnreadCounts: [:],
+            currentStarredCount: 0,
+            previousStarredCount: 0
         )
 
         XCTAssertTrue(shouldReload)
@@ -537,7 +543,31 @@ final class rssssTests: XCTestCase {
             currentFeedIDs: [feedB.objectID, feedA.objectID],
             previousFeedIDs: [feedA.objectID, feedB.objectID],
             currentUnreadCounts: [:],
-            previousUnreadCounts: [:]
+            previousUnreadCounts: [:],
+            currentStarredCount: 0,
+            previousStarredCount: 0
+        )
+
+        XCTAssertTrue(shouldReload)
+    }
+
+    @MainActor
+    func testFeedSidebarReloadsWhenStarredCountChanges() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+        try? context.save()
+
+        let shouldReload = FeedSidebarView.Coordinator.shouldReloadData(
+            currentFeedIDs: [feed.objectID],
+            previousFeedIDs: [feed.objectID],
+            currentUnreadCounts: [:],
+            previousUnreadCounts: [:],
+            currentStarredCount: 2,
+            previousStarredCount: 1
         )
 
         XCTAssertTrue(shouldReload)
@@ -991,6 +1021,177 @@ final class rssssTests: XCTestCase {
     }
 
     @MainActor
+    func testFeedItemIsStarredDefaultsToFalse() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+
+        try? context.save()
+
+        XCTAssertFalse(item.isStarred)
+    }
+
+    @MainActor
+    func testToggleStarredFlipsAndPersists() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let store = FeedStore(persistence: persistence)
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.isStarred = false
+        try? context.save()
+
+        try? store.toggleStarred(itemObjectID: item.objectID)
+        let reloaded = try? context.existingObject(with: item.objectID) as? FeedItem
+        XCTAssertEqual(reloaded?.isStarred, true)
+    }
+
+    @MainActor
+    func testSetStarredIsIdempotentAndPersists() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let store = FeedStore(persistence: persistence)
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.isStarred = false
+        try? context.save()
+
+        try? store.setStarred(itemObjectID: item.objectID, isStarred: true)
+        try? store.setStarred(itemObjectID: item.objectID, isStarred: true)
+
+        let reloaded = try? context.existingObject(with: item.objectID) as? FeedItem
+        XCTAssertEqual(reloaded?.isStarred, true)
+    }
+
+    @MainActor
+    func testStarredItemsControllerReturnsOnlyStarredSortedByPubDateThenCreatedAt() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let oldStarred = FeedItem(context: context)
+        oldStarred.id = UUID()
+        oldStarred.feed = feed
+        oldStarred.createdAt = Date(timeIntervalSince1970: 10)
+        oldStarred.pubDate = Date(timeIntervalSince1970: 100)
+        oldStarred.isStarred = true
+
+        let tieStarredOlderCreated = FeedItem(context: context)
+        tieStarredOlderCreated.id = UUID()
+        tieStarredOlderCreated.feed = feed
+        tieStarredOlderCreated.createdAt = Date(timeIntervalSince1970: 20)
+        tieStarredOlderCreated.pubDate = Date(timeIntervalSince1970: 200)
+        tieStarredOlderCreated.isStarred = true
+
+        let tieStarredNewerCreated = FeedItem(context: context)
+        tieStarredNewerCreated.id = UUID()
+        tieStarredNewerCreated.feed = feed
+        tieStarredNewerCreated.createdAt = Date(timeIntervalSince1970: 30)
+        tieStarredNewerCreated.pubDate = Date(timeIntervalSince1970: 200)
+        tieStarredNewerCreated.isStarred = true
+
+        let unstarred = FeedItem(context: context)
+        unstarred.id = UUID()
+        unstarred.feed = feed
+        unstarred.createdAt = Date(timeIntervalSince1970: 40)
+        unstarred.pubDate = Date(timeIntervalSince1970: 300)
+        unstarred.isStarred = false
+
+        try? context.save()
+
+        let controller = StarredItemsController(context: context, initialFetchLimit: 10)
+        XCTAssertEqual(
+            controller.items.map(\.objectID),
+            [tieStarredNewerCreated.objectID, tieStarredOlderCreated.objectID, oldStarred.objectID]
+        )
+    }
+
+    @MainActor
+    func testStarredItemsControllerLoadMoreIncreasesVisibleItems() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        for offset in 0..<5 {
+            let item = FeedItem(context: context)
+            item.id = UUID()
+            item.createdAt = Date().addingTimeInterval(TimeInterval(offset))
+            item.pubDate = Date().addingTimeInterval(TimeInterval(offset))
+            item.feed = feed
+            item.isStarred = true
+        }
+        try? context.save()
+
+        let controller = StarredItemsController(context: context, initialFetchLimit: 2)
+        XCTAssertEqual(controller.items.count, 2)
+        controller.loadMore()
+        XCTAssertEqual(controller.items.count, 4)
+        controller.loadMore()
+        XCTAssertEqual(controller.items.count, 5)
+    }
+
+    @MainActor
+    func testStarredCountControllerUpdatesWhenItemStarredAndUnstarred() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let store = FeedStore(persistence: persistence)
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.isStarred = false
+        try? context.save()
+
+        let countController = StarredCountController(context: context)
+        XCTAssertEqual(countController.count, 0)
+
+        try? store.setStarred(itemObjectID: item.objectID, isStarred: true)
+        await waitUntil(timeout: 2.0) {
+            countController.count == 1
+        }
+        XCTAssertEqual(countController.count, 1)
+
+        try? store.setStarred(itemObjectID: item.objectID, isStarred: false)
+        await waitUntil(timeout: 2.0) {
+            countController.count == 0
+        }
+        XCTAssertEqual(countController.count, 0)
+    }
+
+    @MainActor
     func testSelectionAfterDeletingSelectedFeedPicksNextRemainingFeed() {
         let persistence = PersistenceController(inMemory: true)
         let context = persistence.container.viewContext
@@ -1005,12 +1206,12 @@ final class rssssTests: XCTestCase {
         try? context.save()
 
         let next = ContentView.selectionAfterDeleting(
-            selected: feedA.objectID,
+            selected: .feed(feedA.objectID),
             deleting: feedA.objectID,
             remainingFeeds: [feedB]
         )
 
-        XCTAssertEqual(next, feedB.objectID)
+        XCTAssertEqual(next, .feed(feedB.objectID))
     }
 
     @MainActor
@@ -1028,12 +1229,45 @@ final class rssssTests: XCTestCase {
         try? context.save()
 
         let next = ContentView.selectionAfterDeleting(
-            selected: feedA.objectID,
+            selected: .feed(feedA.objectID),
             deleting: feedB.objectID,
             remainingFeeds: [feedA]
         )
 
-        XCTAssertEqual(next, feedA.objectID)
+        XCTAssertEqual(next, .feed(feedA.objectID))
+    }
+
+    @MainActor
+    func testSelectionAfterDeletingKeepsStarredSelection() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+        try? context.save()
+
+        let next = ContentView.selectionAfterDeleting(
+            selected: .starred,
+            deleting: feed.objectID,
+            remainingFeeds: []
+        )
+
+        XCTAssertEqual(next, .starred)
+    }
+
+    @MainActor
+    func testNextSelectionKeepsStarredWhenAlreadySelected() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+        try? context.save()
+
+        let next = ContentView.nextSelection(current: .starred, feeds: [feed])
+        XCTAssertEqual(next, .starred)
     }
 
     @MainActor
@@ -1202,6 +1436,33 @@ final class rssssTests: XCTestCase {
 
         let target = FeedItemsView.openTarget(selectedItemID: second.objectID, items: [first, second])
         XCTAssertEqual(target?.objectID, second.objectID)
+    }
+
+    @MainActor
+    func testStarTargetReturnsSelectedItem() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let first = FeedItem(context: context)
+        first.id = UUID()
+        first.createdAt = Date()
+        first.feed = feed
+
+        let second = FeedItem(context: context)
+        second.id = UUID()
+        second.createdAt = Date().addingTimeInterval(1)
+        second.feed = feed
+
+        let target = FeedItemsView.starTarget(selectedItemID: second.objectID, items: [first, second])
+        XCTAssertEqual(target?.objectID, second.objectID)
+    }
+
+    func testStarredItemsViewEmptyMessage() {
+        XCTAssertEqual(StarredItemsView.emptyMessage(), "Star items to keep track of them here.")
     }
 
     func testPreviewAfterFeedSelectionChangeClearsExistingPreview() {

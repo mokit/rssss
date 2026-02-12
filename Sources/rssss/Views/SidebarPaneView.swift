@@ -3,9 +3,10 @@ import CoreData
 import AppKit
 
 struct SidebarPaneView: View {
-    @Binding var selection: NSManagedObjectID?
+    @Binding var selection: SidebarSelection?
     let feeds: [Feed]
     let unreadCounts: [NSManagedObjectID: Int]
+    let starredCount: Int
     let onDelete: (Feed) -> Void
     let onAddFeed: () -> Void
     let onAddOPML: () -> Void
@@ -32,6 +33,7 @@ struct SidebarPaneView: View {
                 selection: $selection,
                 feeds: feeds,
                 unreadCounts: unreadCounts,
+                starredCount: starredCount,
                 onDelete: onDelete,
                 onAddFeed: onAddFeed,
                 onAddOPML: onAddOPML

@@ -228,6 +228,7 @@ final class FeedStore: ObservableObject {
                 newItem.summary = SummaryNormalizer.normalized(parsedItem.summary)
                 newItem.pubDate = parsedItem.pubDate
                 newItem.isRead = false
+                newItem.isStarred = false
                 newItem.createdAt = Date()
                 newItem.feed = backgroundFeed
                 existingKeys.insert(key)
@@ -561,6 +562,31 @@ final class FeedStore: ObservableObject {
 
     func markAllRead(feed: Feed) async throws {
         try await markAllRead(feedObjectID: feed.objectID)
+    }
+
+    func toggleStarred(itemObjectID: NSManagedObjectID) throws {
+        let context = persistence.container.viewContext
+        guard let item = try context.existingObject(with: itemObjectID) as? FeedItem, !item.isDeleted else {
+            return
+        }
+
+        item.isStarred.toggle()
+        if context.hasChanges {
+            try context.save()
+        }
+    }
+
+    func setStarred(itemObjectID: NSManagedObjectID, isStarred: Bool) throws {
+        let context = persistence.container.viewContext
+        guard let item = try context.existingObject(with: itemObjectID) as? FeedItem, !item.isDeleted else {
+            return
+        }
+        guard item.isStarred != isStarred else { return }
+
+        item.isStarred = isStarred
+        if context.hasChanges {
+            try context.save()
+        }
     }
 
     func markAllRead(feedObjectID: NSManagedObjectID) async throws {

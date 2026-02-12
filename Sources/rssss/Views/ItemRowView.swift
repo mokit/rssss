@@ -3,7 +3,9 @@ import SwiftUI
 struct ItemRowView: View {
     let item: FeedItem
     let isSelected: Bool
+    let sourceLabel: String?
     let onView: () -> Void
+    let onToggleStar: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -12,10 +14,18 @@ struct ItemRowView: View {
                 .foregroundStyle(item.isRead ? .secondary : .primary)
                 .lineLimit(2)
 
-            if let dateText = relativeDateText() {
-                Text(dateText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                if let sourceLabel, !sourceLabel.isEmpty {
+                    Text(sourceLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if let dateText = relativeDateText() {
+                    Text(dateText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if !item.displaySummary.isEmpty {
@@ -26,6 +36,15 @@ struct ItemRowView: View {
             }
 
             HStack {
+                Button {
+                    onToggleStar()
+                } label: {
+                    Image(systemName: item.isStarred ? "star.fill" : "star")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help(item.isStarred ? "Unstar item" : "Star item")
+
                 Spacer()
                 Button("View") {
                     onView()

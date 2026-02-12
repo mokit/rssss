@@ -15,8 +15,9 @@ struct ContentView: View {
     private let viewContext: NSManagedObjectContext
     @StateObject private var feedsController: FeedsController
     @StateObject private var unreadCountsController: UnreadCountsController
+    @StateObject private var starredCountController: StarredCountController
 
-    @State private var selectedFeedID: NSManagedObjectID?
+    @State private var selectedSidebarSelection: SidebarSelection?
     @State private var showRead = false
     @State private var presentedAddSheet: AddSheetRoute?
     @State private var alertTitle = "Error"
@@ -31,10 +32,11 @@ struct ContentView: View {
         self.viewContext = viewContext
         _feedsController = StateObject(wrappedValue: FeedsController(context: viewContext))
         _unreadCountsController = StateObject(wrappedValue: UnreadCountsController(context: viewContext))
+        _starredCountController = StateObject(wrappedValue: StarredCountController(context: viewContext))
     }
 
     private var selectedFeed: Feed? {
-        ContentView.resolveSelectedFeed(id: selectedFeedID, in: viewContext)
+        ContentView.resolveSelectedFeed(selection: selectedSidebarSelection, in: viewContext)
     }
 
     var body: some View {
@@ -56,7 +58,7 @@ struct ContentView: View {
                     Task {
                         do {
                             let feed = try feedStore.addFeed(urlString: urlString)
-                            selectedFeedID = feed.objectID
+                            selectedSidebarSelection = .feed(feed.objectID)
                             try await feedStore.refresh(feed: feed)
                         } catch {
                             alertTitle = "Error"
@@ -73,7 +75,7 @@ struct ContentView: View {
                         do {
                             let result = try await feedStore.importOPML(urlString: urlString)
                             if let lastImportedFeedID = result.feedObjectIDs.last {
-                                selectedFeedID = lastImportedFeedID
+                                selectedSidebarSelection = .feed(lastImportedFeedID)
                             }
                             if let summary = ContentView.opmlImportSummary(result: result) {
                                 alertTitle = "Import Summary"
@@ -95,16 +97,16 @@ struct ContentView: View {
         } message: {
             Text(alertMessage ?? "Unknown error")
         }
-        .onChange(of: selectedFeedID) { _, _ in
+        .onChange(of: selectedSidebarSelection) { _, newSelection in
             let nextState = ContentView.stateAfterSelectionChange()
             showRead = nextState.showRead
             sessionToken = nextState.sessionToken
-            isDetailBinding = selectedFeedID != nil
+            isDetailBinding = newSelection?.feedObjectID != nil
             boundDetailFeedID = nil
             detailReloadToken = UUID()
             previewRequest = ContentView.previewAfterFeedSelectionChange(current: previewRequest)
 
-            if let selectedFeedID {
+            if let selectedFeedID = newSelection?.feedObjectID {
                 Task {
                     await feedStore.normalizeLegacySummaries(feedObjectID: selectedFeedID)
                 }
@@ -114,18 +116,19 @@ struct ContentView: View {
 
     private var sidebarPane: some View {
         SidebarPaneView(
-            selection: $selectedFeedID,
+            selection: $selectedSidebarSelection,
             feeds: feedsController.feeds,
             unreadCounts: unreadCountsController.counts,
+            starredCount: starredCountController.count,
             onDelete: deleteFeed,
             onAddFeed: { presentedAddSheet = .feed },
             onAddOPML: { presentedAddSheet = .opml }
         )
         .task {
-            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+            selectedSidebarSelection = ContentView.nextSelection(current: selectedSidebarSelection, feeds: feedsController.feeds)
         }
         .onChange(of: feedsController.feeds.count) { _, _ in
-            selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
+            selectedSidebarSelection = ContentView.nextSelection(current: selectedSidebarSelection, feeds: feedsController.feeds)
         }
     }
 
@@ -137,7 +140,25 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let feed = selectedFeed {
+        if case .starred = selectedSidebarSelection {
+            if let previewRequest {
+                HSplitView {
+                    starredItemsPane
+                        .frame(minWidth: ContentView.feedItemsPaneMinWidth, maxWidth: .infinity)
+                    WebPreviewPaneView(
+                        request: previewRequest,
+                        onClose: { self.previewRequest = nil }
+                    )
+                    .frame(
+                        minWidth: ContentView.previewPaneMinWidth,
+                        idealWidth: ContentView.previewPaneIdealWidth,
+                        maxWidth: .infinity
+                    )
+                }
+            } else {
+                starredItemsPane
+            }
+        } else if let feed = selectedFeed {
             if let previewRequest {
                 HSplitView {
                     feedItemsPane(for: feed)
@@ -179,16 +200,53 @@ struct ContentView: View {
                 sessionToken: sessionToken,
                 viewContext: viewContext,
                 onFeedBound: { boundFeedID in
-                    guard boundFeedID == selectedFeedID else { return }
+                    guard case .feed(let selectedFeedID) = selectedSidebarSelection, boundFeedID == selectedFeedID else {
+                        return
+                    }
                     boundDetailFeedID = boundFeedID
                     isDetailBinding = false
                 },
                 onOpenInPreview: { request in
                     previewRequest = request
-                }
+                },
+                onToggleStar: toggleStarredItem
             )
             .id("\(feed.objectID.uriRepresentation().absoluteString)#\(detailReloadToken.uuidString)")
         }
+    }
+
+    private var starredItemsPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            starredHeader
+
+            StarredItemsView(
+                initialItemsLimit: settingsStore.initialFeedItemsLimit,
+                sessionToken: sessionToken,
+                viewContext: viewContext,
+                onOpenInPreview: { request in
+                    previewRequest = request
+                },
+                onToggleStar: toggleStarredItem
+            )
+            .id("starred#\(detailReloadToken.uuidString)")
+        }
+    }
+
+    private var starredHeader: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Starred")
+                    .font(.title2.weight(.semibold))
+                Text("\(starredCountController.count) total")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, -6)
+        .padding(.bottom, 8)
     }
 
     private func detailHeader(for feed: Feed) -> some View {
@@ -262,16 +320,24 @@ struct ContentView: View {
         .padding(.bottom, 8)
     }
 
+    private func toggleStarredItem(_ objectID: NSManagedObjectID) {
+        do {
+            try feedStore.toggleStarred(itemObjectID: objectID)
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
     private func deleteFeed(_ feed: Feed) {
         do {
             guard !feed.isDeleted else { return }
             let remainingFeeds = feedsController.feeds.filter { $0.objectID != feed.objectID }
-            selectedFeedID = ContentView.selectionAfterDeleting(
-                selected: selectedFeedID,
+            selectedSidebarSelection = ContentView.selectionAfterDeleting(
+                selected: selectedSidebarSelection,
                 deleting: feed.objectID,
                 remainingFeeds: remainingFeeds
             )
-            if selectedFeedID == nil {
+            if selectedSidebarSelection == nil {
                 let nextState = ContentView.stateAfterSelectionChange()
                 showRead = nextState.showRead
                 sessionToken = nextState.sessionToken
@@ -315,6 +381,10 @@ extension ContentView {
         return feed.isDeleted ? nil : feed
     }
 
+    static func resolveSelectedFeed(selection: SidebarSelection?, in context: NSManagedObjectContext) -> Feed? {
+        resolveSelectedFeed(id: selection?.feedObjectID, in: context)
+    }
+
     static func stateAfterSelectionChange(sessionTokenGenerator: () -> UUID = UUID.init) -> (showRead: Bool, sessionToken: UUID) {
         (false, sessionTokenGenerator())
     }
@@ -352,13 +422,25 @@ extension ContentView {
         return "Last refresh: \(formatter.string(from: lastRefreshedAt))"
     }
 
-    static func nextSelection(current: NSManagedObjectID?, feeds: [Feed]) -> NSManagedObjectID? {
-        current ?? feeds.first?.objectID
+    static func nextSelection(current: SidebarSelection?, feeds: [Feed]) -> SidebarSelection? {
+        if let current {
+            switch current {
+            case .starred:
+                return .starred
+            case .feed(let objectID):
+                if feeds.contains(where: { $0.objectID == objectID }) {
+                    return current
+                }
+                return feeds.first.map { .feed($0.objectID) } ?? .starred
+            }
+        }
+        return feeds.first.map { .feed($0.objectID) } ?? .starred
     }
 
-    static func selectionAfterDeleting(selected: NSManagedObjectID?, deleting: NSManagedObjectID, remainingFeeds: [Feed]) -> NSManagedObjectID? {
-        guard selected == deleting else { return selected }
-        return remainingFeeds.first?.objectID
+    static func selectionAfterDeleting(selected: SidebarSelection?, deleting: NSManagedObjectID, remainingFeeds: [Feed]) -> SidebarSelection? {
+        guard case .feed(let selectedID) = selected else { return selected }
+        guard selectedID == deleting else { return selected }
+        return remainingFeeds.first.map { .feed($0.objectID) } ?? .starred
     }
 
     static func previewAfterFeedSelectionChange(current: PreviewRequest?) -> PreviewRequest? {

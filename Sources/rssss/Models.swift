@@ -81,6 +81,12 @@ final class ManagedModel {
         itemIsRead.isOptional = false
         itemIsRead.defaultValue = false
 
+        let itemIsStarred = NSAttributeDescription()
+        itemIsStarred.name = "isStarred"
+        itemIsStarred.attributeType = .booleanAttributeType
+        itemIsStarred.isOptional = false
+        itemIsStarred.defaultValue = false
+
         let itemCreatedAt = NSAttributeDescription()
         itemCreatedAt.name = "createdAt"
         itemCreatedAt.attributeType = .dateAttributeType
@@ -124,6 +130,7 @@ final class ManagedModel {
             itemSummary,
             itemPubDate,
             itemIsRead,
+            itemIsStarred,
             itemCreatedAt,
             feedRel
         ]
@@ -188,6 +195,7 @@ final class FeedItem: NSManagedObject {
     @NSManaged var summary: String?
     @NSManaged var pubDate: Date?
     @NSManaged var isRead: Bool
+    @NSManaged var isStarred: Bool
     @NSManaged var createdAt: Date
     @NSManaged var feed: Feed
 }

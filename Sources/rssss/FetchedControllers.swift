@@ -172,3 +172,106 @@ final class FeedItemsController: NSObject, ObservableObject, @preconcurrency NSF
         }
     }
 }
+
+@MainActor
+final class StarredItemsController: NSObject, ObservableObject, @preconcurrency NSFetchedResultsControllerDelegate {
+    @Published private(set) var items: [FeedItem] = []
+
+    private let controller: NSFetchedResultsController<FeedItem>
+    private let pageSize: Int
+    private var fetchLimit: Int
+
+    var currentFetchLimit: Int {
+        fetchLimit
+    }
+
+    var canLoadMore: Bool {
+        !items.isEmpty && items.count >= fetchLimit
+    }
+
+    init(
+        context: NSManagedObjectContext,
+        initialFetchLimit: Int = RefreshSettings.defaultInitialFeedItemsLimit
+    ) {
+        let normalizedLimit = max(1, initialFetchLimit)
+        pageSize = normalizedLimit
+        fetchLimit = normalizedLimit
+
+        let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
+        request.predicate = NSPredicate(format: "isStarred == YES")
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \FeedItem.pubDate, ascending: false),
+            NSSortDescriptor(keyPath: \FeedItem.createdAt, ascending: false)
+        ]
+        request.fetchLimit = normalizedLimit
+        request.fetchBatchSize = normalizedLimit
+        controller = NSFetchedResultsController(
+            fetchRequest: request,
+            managedObjectContext: context,
+            sectionNameKeyPath: nil,
+            cacheName: nil
+        )
+        super.init()
+        controller.delegate = self
+        try? controller.performFetch()
+        applyFetchedObjects()
+    }
+
+    func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {
+        applyFetchedObjects()
+    }
+
+    func loadMore() {
+        resetFetchLimit(to: fetchLimit + pageSize)
+    }
+
+    func resetFetchLimit(to limit: Int) {
+        let normalizedLimit = max(1, limit)
+        fetchLimit = normalizedLimit
+        controller.fetchRequest.fetchLimit = normalizedLimit
+        controller.fetchRequest.fetchBatchSize = pageSize
+        try? controller.performFetch()
+        applyFetchedObjects()
+    }
+
+    private func applyFetchedObjects() {
+        items = (controller.fetchedObjects ?? []).filter { !$0.isDeleted && $0.managedObjectContext != nil }
+    }
+}
+
+@MainActor
+final class StarredCountController: NSObject, ObservableObject, @preconcurrency NSFetchedResultsControllerDelegate {
+    @Published private(set) var count: Int = 0
+
+    private let controller: NSFetchedResultsController<FeedItem>
+
+    init(context: NSManagedObjectContext) {
+        let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
+        request.predicate = NSPredicate(format: "isStarred == YES")
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \FeedItem.createdAt, ascending: false)
+        ]
+        controller = NSFetchedResultsController(
+            fetchRequest: request,
+            managedObjectContext: context,
+            sectionNameKeyPath: nil,
+            cacheName: nil
+        )
+        super.init()
+        controller.delegate = self
+        try? controller.performFetch()
+        rebuildCount()
+    }
+
+    func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {
+        rebuildCount()
+    }
+
+    private func rebuildCount() {
+        count = (controller.fetchedObjects ?? []).reduce(into: 0) { partialResult, item in
+            if !item.isDeleted && item.managedObjectContext != nil {
+                partialResult += 1
+            }
+        }
+    }
+}

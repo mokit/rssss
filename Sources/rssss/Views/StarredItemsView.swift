@@ -2,58 +2,44 @@ import SwiftUI
 import CoreData
 import AppKit
 
-struct FeedItemsView: View {
-    @EnvironmentObject private var logStore: AppLogStore
+struct StarredItemsView: View {
     private let viewContext: NSManagedObjectContext
-    let feedObjectID: NSManagedObjectID
     let initialItemsLimit: Int
-    let showRead: Bool
     let sessionToken: UUID
-    let onFeedBound: (NSManagedObjectID) -> Void
     let onOpenInPreview: (PreviewRequest) -> Void
     let onToggleStar: (NSManagedObjectID) -> Void
 
     @StateObject private var readMarker = ReadMarker(persistence: PersistenceController.shared)
-    @StateObject private var itemsController: FeedItemsController
-    @State private var sessionUnreadIDs: Set<NSManagedObjectID> = []
+    @StateObject private var itemsController: StarredItemsController
     @State private var selectedItemID: NSManagedObjectID?
     @State private var suppressReadTracking = false
     @State private var itemFrames: [NSManagedObjectID: CGRect] = [:]
     @State private var containerHeight: CGFloat = 0
     @State private var selectionChangedByKeyboard = false
     @State private var scrollProxy: ScrollViewProxy?
-    @State private var loadStartTime = Date()
-    @State private var didLogSelectionLoad = false
 
     init(
-        feedObjectID: NSManagedObjectID,
         initialItemsLimit: Int,
-        showRead: Bool,
         sessionToken: UUID,
         viewContext: NSManagedObjectContext,
-        onFeedBound: @escaping (NSManagedObjectID) -> Void,
         onOpenInPreview: @escaping (PreviewRequest) -> Void,
         onToggleStar: @escaping (NSManagedObjectID) -> Void
     ) {
-        self.feedObjectID = feedObjectID
         self.initialItemsLimit = initialItemsLimit
-        self.showRead = showRead
         self.sessionToken = sessionToken
         self.viewContext = viewContext
-        self.onFeedBound = onFeedBound
         self.onOpenInPreview = onOpenInPreview
         self.onToggleStar = onToggleStar
         _itemsController = StateObject(
-            wrappedValue: FeedItemsController(
+            wrappedValue: StarredItemsController(
                 context: viewContext,
-                feedObjectID: feedObjectID,
                 initialFetchLimit: initialItemsLimit
             )
         )
     }
 
     var body: some View {
-        let visibleItems = filteredItems(from: itemsController.items)
+        let visibleItems = itemsController.items
 
         Group {
             if visibleItems.isEmpty {
@@ -64,10 +50,10 @@ struct FeedItemsView: View {
                             .scaledToFit()
                             .frame(width: 56, height: 56)
                             .foregroundStyle(.secondary)
-                        Text("No Items")
+                        Text("No Starred Items")
                             .font(.title2.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        Text(FeedItemsView.emptyMessage(showRead: showRead))
+                        Text(StarredItemsView.emptyMessage())
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -88,28 +74,28 @@ struct FeedItemsView: View {
                                     ItemRowView(
                                         item: item,
                                         isSelected: item.objectID == selectedItemID,
-                                        sourceLabel: nil,
+                                        sourceLabel: item.feed.displayName,
                                         onView: { openItem(item) },
                                         onToggleStar: { onToggleStar(item.objectID) }
                                     )
-                                        .id(item.objectID)
-                                        .onTapGesture(count: 2) {
-                                            selectionChangedByKeyboard = false
-                                            selectedItemID = item.objectID
-                                            openItem(item)
+                                    .id(item.objectID)
+                                    .onTapGesture(count: 2) {
+                                        selectionChangedByKeyboard = false
+                                        selectedItemID = item.objectID
+                                        openItem(item)
+                                    }
+                                    .onTapGesture {
+                                        selectionChangedByKeyboard = false
+                                        selectedItemID = item.objectID
+                                    }
+                                    .background(
+                                        GeometryReader { proxy in
+                                            Color.clear.preference(
+                                                key: ItemFramePreferenceKey.self,
+                                                value: [item.objectID: proxy.frame(in: .named("starredItemsScroll"))]
+                                            )
                                         }
-                                        .onTapGesture {
-                                            selectionChangedByKeyboard = false
-                                            selectedItemID = item.objectID
-                                        }
-                                        .background(
-                                            GeometryReader { proxy in
-                                                Color.clear.preference(
-                                                    key: ItemFramePreferenceKey.self,
-                                                    value: [item.objectID: proxy.frame(in: .named("itemsScroll"))]
-                                                )
-                                            }
-                                        )
+                                    )
                                     Divider()
                                 }
                             }
@@ -124,7 +110,7 @@ struct FeedItemsView: View {
                                     }
                             }
                         )
-                        .coordinateSpace(name: "itemsScroll")
+                        .coordinateSpace(name: "starredItemsScroll")
                         .onPreferenceChange(ItemFramePreferenceKey.self) { frames in
                             itemFrames = frames
                             guard !suppressReadTracking else { return }
@@ -162,58 +148,16 @@ struct FeedItemsView: View {
                 }
             }
         }
-        .task(id: feedObjectID) {
-            loadStartTime = Date()
-            didLogSelectionLoad = false
-            itemsController.resetFetchLimit(to: initialItemsLimit)
-            onFeedBound(feedObjectID)
-        }
         .task(id: sessionToken) {
-            sessionUnreadIDs = Set(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
-            applyAutoExpandAndLogIfNeeded()
-        }
-        .onChange(of: showRead) { _, _ in
-            didLogSelectionLoad = false
-            applyAutoExpandAndLogIfNeeded()
+            itemsController.resetFetchLimit(to: initialItemsLimit)
         }
         .onChange(of: initialItemsLimit) { _, newLimit in
             itemsController.resetFetchLimit(to: newLimit)
-            didLogSelectionLoad = false
-            applyAutoExpandAndLogIfNeeded()
         }
-        .onChange(of: FeedItemsView.sessionUnreadSnapshot(items: itemsController.items)) { _, _ in
-            sessionUnreadIDs = FeedItemsView.nextSessionUnreadIDs(
-                current: sessionUnreadIDs,
-                items: itemsController.items
-            )
-            applyAutoExpandAndLogIfNeeded()
-        }
-    }
-
-    private func filteredItems(from items: [FeedItem]) -> [FeedItem] {
-        FeedItemsView.filteredItems(items: items, showRead: showRead, sessionUnreadIDs: sessionUnreadIDs)
     }
 
     private func loadOlderItems() {
         itemsController.loadMore()
-    }
-
-    private func applyAutoExpandAndLogIfNeeded() {
-        guard !didLogSelectionLoad else { return }
-        let autoExpandedPages = itemsController.maybeAutoExpandForUnread(
-            showRead: showRead,
-            sessionUnreadIDs: sessionUnreadIDs
-        )
-        didLogSelectionLoad = true
-        logSelectionLoad(autoExpandedPages: autoExpandedPages)
-    }
-
-    private func logSelectionLoad(autoExpandedPages: Int) {
-        let elapsedMs = max(0, Int(Date().timeIntervalSince(loadStartTime) * 1000))
-        let feedURL = (try? viewContext.existingObject(with: feedObjectID) as? Feed)?.url ?? "unknown"
-        logStore.add(
-            "Feed selection load: feed=\(feedURL), feedID=\(feedObjectID.uriRepresentation().absoluteString), initialLimit=\(initialItemsLimit), autoExpandedPages=\(autoExpandedPages), fetched=\(itemsController.items.count), elapsedMs=\(elapsedMs)"
-        )
     }
 
     private func moveSelection(in items: [FeedItem], delta: Int) {
@@ -342,126 +286,8 @@ struct FeedItemsView: View {
     }
 }
 
-extension FeedItemsView {
-    struct SessionUnreadSnapshot: Equatable {
-        let objectID: NSManagedObjectID
-        let isRead: Bool
-    }
-
-    static func itemIdentity(_ item: FeedItem) -> NSManagedObjectID {
-        item.objectID
-    }
-
-    static func emptyMessage(showRead: Bool) -> String {
-        showRead ? "This feed has no items." : "No unread items. Toggle Show Read to see older items."
-    }
-
-    static func filteredItems(items: [FeedItem], showRead: Bool, sessionUnreadIDs: Set<NSManagedObjectID>) -> [FeedItem] {
-        if showRead {
-            return items
-        }
-        return items.filter { item in
-            !item.isRead || sessionUnreadIDs.contains(item.objectID)
-        }
-    }
-
-    static func sessionUnreadSnapshot(items: [FeedItem]) -> [SessionUnreadSnapshot] {
-        items.map { SessionUnreadSnapshot(objectID: $0.objectID, isRead: $0.isRead) }
-    }
-
-    static func nextSessionUnreadIDs(current: Set<NSManagedObjectID>, items: [FeedItem]) -> Set<NSManagedObjectID> {
-        let unreadIDs = Set(items.filter { !$0.isRead }.map { $0.objectID })
-        if unreadIDs.isEmpty {
-            return []
-        }
-        return current.union(unreadIDs)
-    }
-
-    static func nextSelectionIndex(currentIndex: Int?, itemCount: Int, delta: Int) -> Int? {
-        guard itemCount > 0 else { return nil }
-        guard let currentIndex else { return 0 }
-        return max(0, min(itemCount - 1, currentIndex + delta))
-    }
-
-    static func openTarget(selectedItemID: NSManagedObjectID?, items: [FeedItem]) -> FeedItem? {
-        guard let selectedItemID else { return nil }
-        return items.first(where: { $0.objectID == selectedItemID })
-    }
-
-    static func starTarget(selectedItemID: NSManagedObjectID?, items: [FeedItem]) -> FeedItem? {
-        openTarget(selectedItemID: selectedItemID, items: items)
-    }
-
-    static func previewRequest(for item: FeedItem) -> PreviewRequest? {
-        guard
-            let link = item.link,
-            let url = URL(string: link),
-            let scheme = url.scheme?.lowercased(),
-            (scheme == "https" || scheme == "http"),
-            url.host != nil
-        else {
-            return nil
-        }
-        return PreviewRequest(url: url, title: item.displayTitle)
-    }
-
-    static func anchorToRevealSelection(selectedFrame: CGRect, nextFrame: CGRect?, containerHeight: CGFloat) -> UnitPoint? {
-        if selectedFrame.minY < 0 {
-            return .top
-        }
-
-        let nextHeight = nextFrame?.height ?? selectedFrame.height
-        let threshold = containerHeight - nextHeight
-        if selectedFrame.maxY > threshold {
-            return .bottom
-        }
-
-        return nil
-    }
-}
-
-struct KeyMonitorView: NSViewRepresentable {
-    let onKeyDown: (NSEvent) -> Bool
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onKeyDown: onKeyDown)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        context.coordinator.startMonitoring()
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.onKeyDown = onKeyDown
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.stopMonitoring()
-    }
-
-    final class Coordinator {
-        var onKeyDown: (NSEvent) -> Bool
-        private var monitor: Any?
-
-        init(onKeyDown: @escaping (NSEvent) -> Bool) {
-            self.onKeyDown = onKeyDown
-        }
-
-        func startMonitoring() {
-            guard monitor == nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let self else { return event }
-                return self.onKeyDown(event) ? nil : event
-            }
-        }
-
-        func stopMonitoring() {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-            }
-            monitor = nil
-        }
+extension StarredItemsView {
+    static func emptyMessage() -> String {
+        "Star items to keep track of them here."
     }
 }
