@@ -61,7 +61,7 @@ struct rssssApp: App {
 private struct RootView: View {
     let persistence: PersistenceController
     let feedStore: FeedStore
-    let settingsStore: RefreshSettingsStore
+    @ObservedObject var settingsStore: RefreshSettingsStore
     let autoRefreshController: AutoRefreshController
     let logStore: AppLogStore
     let performanceMonitor: PerformanceMonitor
