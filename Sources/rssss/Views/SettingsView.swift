@@ -21,6 +21,20 @@ struct SettingsView: View {
             Section("Display") {
                 Toggle("Show last refresh time per feed", isOn: $settingsStore.showLastRefresh)
             }
+            Section("Performance") {
+                HStack {
+                    Text("Initial items per feed")
+                    Stepper(
+                        "",
+                        value: $settingsStore.initialFeedItemsLimit,
+                        in: RefreshSettings.minimumInitialFeedItemsLimit...RefreshSettings.maximumInitialFeedItemsLimit,
+                        step: 50
+                    )
+                    .labelsHidden()
+                    Text("\(settingsStore.initialFeedItemsLimit)")
+                        .monospacedDigit()
+                }
+            }
         }
         .padding(20)
         .frame(width: 420)

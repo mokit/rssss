@@ -2,6 +2,13 @@ import SwiftUI
 import CoreData
 
 struct ContentView: View {
+    private enum AddSheetRoute: String, Identifiable {
+        case feed
+        case opml
+
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var feedStore: FeedStore
     @EnvironmentObject private var settingsStore: RefreshSettingsStore
 
@@ -11,7 +18,8 @@ struct ContentView: View {
 
     @State private var selectedFeedID: NSManagedObjectID?
     @State private var showRead = false
-    @State private var isAddSheetPresented = false
+    @State private var presentedAddSheet: AddSheetRoute?
+    @State private var alertTitle = "Error"
     @State private var alertMessage: String?
     @State private var sessionToken = UUID()
     @State private var detailReloadToken = UUID()
@@ -40,23 +48,48 @@ struct ContentView: View {
             detailContainer
                 .frame(minWidth: ContentView.detailMinWidth, maxWidth: .infinity)
         }
-        .sheet(isPresented: $isAddSheetPresented) {
-            AddFeedSheet { urlString in
-                Task {
-                    do {
-                        let feed = try feedStore.addFeed(urlString: urlString)
-                        selectedFeedID = feed.objectID
-                        try await feedStore.refresh(feed: feed)
-                    } catch {
-                        alertMessage = error.localizedDescription
+        .sheet(item: $presentedAddSheet) { route in
+            switch route {
+            case .feed:
+                AddFeedSheet { urlString in
+                    Task {
+                        do {
+                            let feed = try feedStore.addFeed(urlString: urlString)
+                            selectedFeedID = feed.objectID
+                            try await feedStore.refresh(feed: feed)
+                        } catch {
+                            alertTitle = "Error"
+                            alertMessage = error.localizedDescription
+                        }
                     }
+                    presentedAddSheet = nil
+                } onCancel: {
+                    presentedAddSheet = nil
                 }
-                isAddSheetPresented = false
-            } onCancel: {
-                isAddSheetPresented = false
+            case .opml:
+                AddOPMLSheet { urlString in
+                    Task {
+                        do {
+                            let result = try await feedStore.importOPML(urlString: urlString)
+                            if let lastImportedFeedID = result.feedObjectIDs.last {
+                                selectedFeedID = lastImportedFeedID
+                            }
+                            if let summary = ContentView.opmlImportSummary(result: result) {
+                                alertTitle = "Import Summary"
+                                alertMessage = summary
+                            }
+                        } catch {
+                            alertTitle = "Error"
+                            alertMessage = error.localizedDescription
+                        }
+                    }
+                    presentedAddSheet = nil
+                } onCancel: {
+                    presentedAddSheet = nil
+                }
             }
         }
-        .alert("Error", isPresented: Binding(get: { alertMessage != nil }, set: { _ in alertMessage = nil })) {
+        .alert(alertTitle, isPresented: Binding(get: { alertMessage != nil }, set: { _ in alertMessage = nil })) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(alertMessage ?? "Unknown error")
@@ -68,6 +101,12 @@ struct ContentView: View {
             isDetailBinding = selectedFeedID != nil
             boundDetailFeedID = nil
             detailReloadToken = UUID()
+
+            if let selectedFeedID {
+                Task {
+                    await feedStore.normalizeLegacySummaries(feedObjectID: selectedFeedID)
+                }
+            }
         }
     }
 
@@ -77,7 +116,8 @@ struct ContentView: View {
             feeds: feedsController.feeds,
             unreadCounts: unreadCountsController.counts,
             onDelete: deleteFeed,
-            onAdd: { isAddSheetPresented = true }
+            onAddFeed: { presentedAddSheet = .feed },
+            onAddOPML: { presentedAddSheet = .opml }
         )
         .task {
             selectedFeedID = ContentView.nextSelection(current: selectedFeedID, feeds: feedsController.feeds)
@@ -101,6 +141,7 @@ struct ContentView: View {
 
                 FeedItemsView(
                     feedObjectID: feed.objectID,
+                    initialItemsLimit: settingsStore.initialFeedItemsLimit,
                     showRead: showRead,
                     sessionToken: sessionToken,
                     viewContext: viewContext,
@@ -290,5 +331,32 @@ extension ContentView {
     static func selectionAfterDeleting(selected: NSManagedObjectID?, deleting: NSManagedObjectID, remainingFeeds: [Feed]) -> NSManagedObjectID? {
         guard selected == deleting else { return selected }
         return remainingFeeds.first?.objectID
+    }
+
+    static func opmlImportSummary(result: OPMLImportResult) -> String? {
+        guard result.skippedNonHTTPSCount > 0 || result.refreshFailedCount > 0 else {
+            return nil
+        }
+
+        var lines: [String] = [
+            "Imported \(result.importedCount) feeds (\(result.addedCount) new, \(result.existingCount) existing).",
+            "Skipped non-HTTPS feed URLs: \(result.skippedNonHTTPSCount).",
+            "Feeds that failed to refresh: \(result.refreshFailedCount)."
+        ]
+
+        if let firstFailure = result.refreshFailures.first {
+            lines.append("First refresh failure: \(firstFailure.feedURL)")
+        }
+
+        if !result.skippedNonHTTPSFeedURLs.isEmpty {
+            let previewLimit = 10
+            lines.append("Not imported (HTTP only):")
+            lines.append(contentsOf: result.skippedNonHTTPSFeedURLs.prefix(previewLimit).map { "- \($0)" })
+            if result.skippedNonHTTPSFeedURLs.count > previewLimit {
+                lines.append("- ...and \(result.skippedNonHTTPSFeedURLs.count - previewLimit) more")
+            }
+        }
+
+        return lines.joined(separator: "\n")
     }
 }

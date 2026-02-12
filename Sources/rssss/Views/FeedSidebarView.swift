@@ -7,11 +7,12 @@ struct FeedSidebarView: View {
     let feeds: [Feed]
     let unreadCounts: [NSManagedObjectID: Int]
     let onDelete: (Feed) -> Void
-    let onAdd: () -> Void
+    let onAddFeed: () -> Void
+    let onAddOPML: () -> Void
 
     static let bottomBarVerticalPadding: CGFloat = 10
     static let bottomBarHorizontalPadding: CGFloat = 10
-    static let addButtonSize: CGFloat = 16
+    static let bottomBarButtonSpacing: CGFloat = 10
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,13 +25,12 @@ struct FeedSidebarView: View {
 
             Divider()
 
-            HStack {
-                Button(action: onAdd) {
-                    Image(systemName: "plus")
-                        .frame(width: FeedSidebarView.addButtonSize, height: FeedSidebarView.addButtonSize)
-                }
-                .buttonStyle(.plain)
+            HStack(spacing: FeedSidebarView.bottomBarButtonSpacing) {
+                Button("Add feed", action: onAddFeed)
                 .help("Add feed")
+
+                Button("Add OPML", action: onAddOPML)
+                    .help("Import feeds from an online OPML file")
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, FeedSidebarView.bottomBarVerticalPadding)

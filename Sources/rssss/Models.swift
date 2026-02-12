@@ -161,15 +161,21 @@ extension Feed {
     }
 
     var resolvedFaviconURL: URL? {
-        if let faviconURL, let url = URL(string: faviconURL) {
-            return url
+        guard let faviconURL else { return nil }
+        let trimmed = faviconURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
         }
-        guard let feedURL = URL(string: url), let host = feedURL.host else { return nil }
-        var components = URLComponents()
-        components.scheme = feedURL.scheme ?? "https"
-        components.host = host
-        components.path = "/favicon.ico"
-        return components.url
+
+        // Prefer absolute favicon URLs from the feed.
+        if let absolute = URL(string: trimmed), let scheme = absolute.scheme, !scheme.isEmpty {
+            return absolute
+        }
+
+        // Some feeds emit relative favicon paths (for example "/favicon.ico").
+        // Resolve them against the feed URL so AsyncImage receives a valid absolute URL.
+        guard let baseFeedURL = URL(string: url) else { return nil }
+        return URL(string: trimmed, relativeTo: baseFeedURL)?.absoluteURL
     }
 }
 
@@ -197,23 +203,6 @@ extension FeedItem {
     }
 
     var displaySummary: String {
-        let trimmed = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty {
-            return ""
-        }
-        return trimmed.plainTextFromHTML()
-    }
-}
-
-private extension String {
-    func plainTextFromHTML() -> String {
-        guard let data = data(using: .utf8) else { return self }
-        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
-            .documentType: NSAttributedString.DocumentType.html,
-            .characterEncoding: String.Encoding.utf8.rawValue
-        ]
-        let attributed = try? NSAttributedString(data: data, options: options, documentAttributes: nil)
-        let string = attributed?.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        return string?.isEmpty == false ? string! : self
+        summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }

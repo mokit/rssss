@@ -9,6 +9,111 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(key, "guid:abc")
     }
 
+    func testDeduperUsesLinkAndTitleWhenNoGuid() {
+        let first = Deduper.itemKey(guid: nil, link: "https://example.com/post", title: "Title A", pubDate: nil)
+        let second = Deduper.itemKey(guid: nil, link: "https://example.com/post", title: "Title B", pubDate: nil)
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testDeduperIncludesDateWhenAvailable() {
+        let link = "https://example.com/post"
+        let title = "Same title"
+        let first = Deduper.itemKey(
+            guid: nil,
+            link: link,
+            title: title,
+            pubDate: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let second = Deduper.itemKey(
+            guid: nil,
+            link: link,
+            title: title,
+            pubDate: Date(timeIntervalSince1970: 1_700_000_001)
+        )
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testSummaryNormalizerConvertsHTMLAndTrims() {
+        let normalized = SummaryNormalizer.normalized("  <p>Hello <b>world</b></p>  ")
+        XCTAssertEqual(normalized, "Hello world")
+    }
+
+    @MainActor
+    func testRefreshStoresNormalizedSummaryText() async {
+        let persistence = PersistenceController(inMemory: true)
+        let feedURL = URL(string: "https://example.com/feed.xml")!
+        let rss = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Example Feed</title>
+            <item>
+              <guid>item-1</guid>
+              <title>First item</title>
+              <link>https://example.com/item-1</link>
+              <description><![CDATA[<p>Hello <b>world</b></p>]]></description>
+            </item>
+          </channel>
+        </rss>
+        """
+
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            if url == feedURL {
+                return (
+                    HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data(rss.utf8)
+                )
+            }
+            throw URLError(.fileDoesNotExist)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        let feed = try? store.addFeed(urlString: feedURL.absoluteString)
+        if let feed {
+            try? await store.refresh(feed: feed)
+        }
+
+        let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
+        request.fetchLimit = 1
+        let item = try? persistence.container.viewContext.fetch(request).first
+        let summary = item?.summary ?? ""
+        XCTAssertTrue(summary.contains("Hello"))
+        XCTAssertFalse(summary.contains("<"))
+    }
+
+    @MainActor
+    func testNormalizeLegacySummariesUpdatesFeedItemsInBackground() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let store = FeedStore(persistence: persistence)
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.summary = "<p>Legacy <em>summary</em></p>"
+        try? context.save()
+
+        let itemID = item.objectID
+        await store.normalizeLegacySummaries(feedObjectID: feed.objectID, maxItemsPerRun: 500)
+        await waitUntil(timeout: 2.0) {
+            let updated = try? context.existingObject(with: itemID) as? FeedItem
+            return (updated?.summary ?? "").contains("<") == false
+        }
+
+        let updated = try? context.existingObject(with: itemID) as? FeedItem
+        XCTAssertEqual(updated?.summary, "Legacy summary")
+    }
+
     @MainActor
     func testPersistenceControllerConnectsViewContext() {
         let persistence = PersistenceController(inMemory: true)
@@ -70,6 +175,242 @@ final class rssssTests: XCTestCase {
         let store = FeedStore(persistence: persistence)
 
         XCTAssertNoThrow(try store.addFeed(urlString: "https://example.com/feed.xml"))
+    }
+
+    @MainActor
+    func testImportOPMLRejectsNonHTTPSURL() async {
+        let persistence = PersistenceController(inMemory: true)
+        let store = FeedStore(persistence: persistence)
+
+        do {
+            _ = try await store.importOPML(urlString: "http://example.com/feeds.opml")
+            XCTFail("Expected invalidOPMLURL error")
+        } catch let error as FeedError {
+            XCTAssertEqual(error, .invalidOPMLURL)
+        } catch {
+            XCTFail("Expected FeedError.invalidOPMLURL, got \(error)")
+        }
+    }
+
+    func testOPMLParserExtractsNestedOutlineXMLURLs() throws {
+        let opml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="1.0">
+          <body>
+            <outline text="Folder">
+              <outline text="Feed A" xmlUrl="https://example.com/a.xml"/>
+              <outline text="Feed B" xmlUrl="https://example.com/b.xml"/>
+            </outline>
+          </body>
+        </opml>
+        """
+        let urls = try OPMLDocumentParser.parseFeedURLs(data: Data(opml.utf8))
+        XCTAssertEqual(urls, ["https://example.com/a.xml", "https://example.com/b.xml"])
+    }
+
+    func testOPMLParserIgnoresOutlinesWithoutXMLURL() throws {
+        let opml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="1.0">
+          <body>
+            <outline text="Folder">
+              <outline text="No feed"/>
+              <outline text="Feed A" xmlUrl="https://example.com/a.xml"/>
+            </outline>
+          </body>
+        </opml>
+        """
+        let urls = try OPMLDocumentParser.parseFeedURLs(data: Data(opml.utf8))
+        XCTAssertEqual(urls, ["https://example.com/a.xml"])
+    }
+
+    @MainActor
+    func testImportOPMLDedupesDuplicatesAndTracksAddedVsExisting() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let opmlURL = URL(string: "https://example.com/feeds.opml")!
+        let existingFeedURL = URL(string: "https://example.com/existing.xml")!
+        let newFeedURL = URL(string: "https://example.com/new.xml")!
+
+        let opml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0">
+          <body>
+            <outline text="Existing" xmlUrl="\(existingFeedURL.absoluteString)"/>
+            <outline text="New" xmlUrl="\(newFeedURL.absoluteString)"/>
+            <outline text="New duplicate" xmlUrl="\(newFeedURL.absoluteString)"/>
+            <outline text="Ignored insecure" xmlUrl="http://example.com/insecure.xml"/>
+          </body>
+        </opml>
+        """
+
+        let session = makeMockedSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            if url == opmlURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(opml.utf8))
+            }
+            if url == existingFeedURL || url == newFeedURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+            }
+            throw URLError(.fileDoesNotExist)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        _ = try? store.addFeed(urlString: existingFeedURL.absoluteString)
+        let result = try? await store.importOPML(urlString: opmlURL.absoluteString)
+
+        XCTAssertEqual(result?.addedCount, 1)
+        XCTAssertEqual(result?.existingCount, 1)
+        XCTAssertEqual(result?.importedCount, 2)
+        XCTAssertEqual(result?.feedObjectIDs.count, 2)
+        XCTAssertEqual(result?.skippedNonHTTPSCount, 1)
+        XCTAssertEqual(result?.skippedNonHTTPSFeedURLs, ["http://example.com/insecure.xml"])
+        XCTAssertEqual(result?.refreshFailedCount, 0)
+        XCTAssertEqual(result?.refreshFailures.count, 0)
+
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        let feeds = try? context.fetch(request)
+        XCTAssertEqual(feeds?.count, 2)
+    }
+
+    @MainActor
+    func testImportOPMLContinuesWhenOneFeedRefreshFails() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let opmlURL = URL(string: "https://example.com/feeds.opml")!
+        let goodFeedURL = URL(string: "https://example.com/good.xml")!
+        let badFeedURL = URL(string: "https://example.com/bad.xml")!
+
+        let opml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0">
+          <body>
+            <outline text="Good" xmlUrl="\(goodFeedURL.absoluteString)"/>
+            <outline text="Bad" xmlUrl="\(badFeedURL.absoluteString)"/>
+          </body>
+        </opml>
+        """
+
+        let session = makeMockedSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            if url == opmlURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(opml.utf8))
+            }
+            if url == goodFeedURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+            }
+            if url == badFeedURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("not-a-feed".utf8))
+            }
+            throw URLError(.fileDoesNotExist)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        let result = try? await store.importOPML(urlString: opmlURL.absoluteString)
+
+        XCTAssertEqual(result?.addedCount, 2)
+        XCTAssertEqual(result?.existingCount, 0)
+        XCTAssertEqual(result?.refreshFailedCount, 1)
+        XCTAssertEqual(result?.refreshFailures.first?.feedURL, badFeedURL.absoluteString)
+
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        let feeds = try? context.fetch(request)
+        XCTAssertEqual(feeds?.count, 2)
+    }
+
+    @MainActor
+    func testImportOPMLCountsSkippedNonHTTPSFeeds() async {
+        let persistence = PersistenceController(inMemory: true)
+        let opmlURL = URL(string: "https://example.com/feeds.opml")!
+        let secureFeedURL = URL(string: "https://example.com/secure.xml")!
+
+        let opml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0">
+          <body>
+            <outline text="Secure" xmlUrl="\(secureFeedURL.absoluteString)"/>
+            <outline text="Insecure A" xmlUrl="http://example.com/a.xml"/>
+            <outline text="Insecure B" xmlUrl="http://example.com/b.xml"/>
+          </body>
+        </opml>
+        """
+
+        let session = makeMockedSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            if url == opmlURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(opml.utf8))
+            }
+            if url == secureFeedURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+            }
+            throw URLError(.fileDoesNotExist)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        let result = try? await store.importOPML(urlString: opmlURL.absoluteString)
+        XCTAssertEqual(result?.importedCount, 1)
+        XCTAssertEqual(result?.skippedNonHTTPSCount, 2)
+        XCTAssertEqual(
+            Set(result?.skippedNonHTTPSFeedURLs ?? []),
+            Set(["http://example.com/a.xml", "http://example.com/b.xml"])
+        )
+    }
+
+    @MainActor
+    func testImportOPMLThrowsWhenNoValidHTTPSFeeds() async {
+        let persistence = PersistenceController(inMemory: true)
+        let opmlURL = URL(string: "https://example.com/feeds.opml")!
+        let opml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <opml version="2.0">
+          <body>
+            <outline text="Insecure" xmlUrl="http://example.com/insecure.xml"/>
+            <outline text="No URL"/>
+          </body>
+        </opml>
+        """
+
+        let session = makeMockedSession { request in
+            guard let url = request.url else {
+                throw URLError(.badURL)
+            }
+            if url == opmlURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(opml.utf8))
+            }
+            throw URLError(.fileDoesNotExist)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        do {
+            _ = try await store.importOPML(urlString: opmlURL.absoluteString)
+            XCTFail("Expected opmlContainsNoValidFeeds error")
+        } catch let error as FeedError {
+            XCTAssertEqual(error, .opmlContainsNoValidFeeds)
+        } catch {
+            XCTFail("Expected FeedError.opmlContainsNoValidFeeds, got \(error)")
+        }
     }
 
     @MainActor
@@ -329,7 +670,7 @@ final class rssssTests: XCTestCase {
     func testFeedSidebarBottomBarLayoutConstants() {
         XCTAssertEqual(FeedSidebarView.bottomBarVerticalPadding, 10)
         XCTAssertEqual(FeedSidebarView.bottomBarHorizontalPadding, 10)
-        XCTAssertEqual(FeedSidebarView.addButtonSize, 16)
+        XCTAssertEqual(FeedSidebarView.bottomBarButtonSpacing, 10)
     }
 
     func testSidebarPaneUsesSystemSidebarMaterial() {
@@ -395,6 +736,112 @@ final class rssssTests: XCTestCase {
         let controller = FeedItemsController(context: context, feedObjectID: feedA.objectID)
         XCTAssertEqual(controller.items.count, 1)
         XCTAssertEqual(controller.items.first?.feed.objectID, feedA.objectID)
+    }
+
+    @MainActor
+    func testFeedItemsControllerAppliesInitialFetchLimit() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        for offset in 0..<5 {
+            let item = FeedItem(context: context)
+            item.id = UUID()
+            item.createdAt = Date().addingTimeInterval(TimeInterval(offset))
+            item.feed = feed
+            item.isRead = false
+        }
+        try? context.save()
+
+        let controller = FeedItemsController(context: context, feedObjectID: feed.objectID, initialFetchLimit: 2)
+        XCTAssertEqual(controller.items.count, 2)
+        XCTAssertEqual(controller.currentFetchLimit, 2)
+    }
+
+    @MainActor
+    func testFeedItemsControllerLoadMoreIncreasesVisibleItems() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        for offset in 0..<5 {
+            let item = FeedItem(context: context)
+            item.id = UUID()
+            item.createdAt = Date().addingTimeInterval(TimeInterval(offset))
+            item.feed = feed
+            item.isRead = false
+        }
+        try? context.save()
+
+        let controller = FeedItemsController(context: context, feedObjectID: feed.objectID, initialFetchLimit: 2)
+        XCTAssertEqual(controller.items.count, 2)
+        controller.loadMore()
+        XCTAssertEqual(controller.items.count, 4)
+        controller.loadMore()
+        XCTAssertEqual(controller.items.count, 5)
+    }
+
+    @MainActor
+    func testFeedItemsControllerAutoExpandWhenUnreadBeyondInitialLimit() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        for offset in 0..<6 {
+            let item = FeedItem(context: context)
+            item.id = UUID()
+            item.createdAt = Date().addingTimeInterval(TimeInterval(offset))
+            item.feed = feed
+            item.isRead = true
+            if offset == 1 {
+                item.isRead = false
+            }
+        }
+        try? context.save()
+
+        let controller = FeedItemsController(context: context, feedObjectID: feed.objectID, initialFetchLimit: 3)
+        XCTAssertEqual(controller.items.count, 3)
+        XCTAssertFalse(controller.items.contains { !$0.isRead })
+
+        let expandedPages = controller.maybeAutoExpandForUnread(showRead: false, sessionUnreadIDs: [])
+        XCTAssertEqual(expandedPages, 1)
+        XCTAssertTrue(controller.items.contains { !$0.isRead })
+    }
+
+    @MainActor
+    func testFeedItemsControllerAutoExpandStopsWhenNoMoreItems() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        for offset in 0..<3 {
+            let item = FeedItem(context: context)
+            item.id = UUID()
+            item.createdAt = Date().addingTimeInterval(TimeInterval(offset))
+            item.feed = feed
+            item.isRead = true
+        }
+        try? context.save()
+
+        let controller = FeedItemsController(context: context, feedObjectID: feed.objectID, initialFetchLimit: 2)
+        XCTAssertEqual(controller.items.count, 2)
+
+        let expandedPages = controller.maybeAutoExpandForUnread(showRead: false, sessionUnreadIDs: [])
+        XCTAssertEqual(expandedPages, 1)
+        XCTAssertEqual(controller.items.count, 3)
+        XCTAssertFalse(controller.canLoadMore)
     }
 
     @MainActor
@@ -762,6 +1209,7 @@ final class rssssTests: XCTestCase {
         let store = RefreshSettingsStore(userDefaults: defaults, key: "interval")
         XCTAssertEqual(store.refreshIntervalMinutes, 5)
         XCTAssertEqual(store.showLastRefresh, true)
+        XCTAssertEqual(store.initialFeedItemsLimit, RefreshSettings.defaultInitialFeedItemsLimit)
     }
 
     @MainActor
@@ -807,6 +1255,36 @@ final class rssssTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshSettingsClampsAndPersistsInitialFeedItemsLimit() {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Unable to create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = RefreshSettingsStore(
+            userDefaults: defaults,
+            key: "interval",
+            showLastRefreshKey: "showLastRefresh",
+            initialFeedItemsLimitKey: "initialFeedItemsLimit"
+        )
+
+        store.initialFeedItemsLimit = 1
+        XCTAssertEqual(store.initialFeedItemsLimit, RefreshSettings.minimumInitialFeedItemsLimit)
+        XCTAssertEqual(
+            defaults.integer(forKey: "initialFeedItemsLimit"),
+            RefreshSettings.minimumInitialFeedItemsLimit
+        )
+
+        store.initialFeedItemsLimit = 99999
+        XCTAssertEqual(store.initialFeedItemsLimit, RefreshSettings.maximumInitialFeedItemsLimit)
+        XCTAssertEqual(
+            defaults.integer(forKey: "initialFeedItemsLimit"),
+            RefreshSettings.maximumInitialFeedItemsLimit
+        )
+    }
+
+    @MainActor
     func testAutoRefreshControllerSchedulesForegroundAndBackground() {
         let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -826,8 +1304,8 @@ final class rssssTests: XCTestCase {
 
         controller.start(refreshIntervalMinutes: settings.refreshIntervalMinutes)
 
-        XCTAssertEqual(foreground.scheduledIntervals.last, 300)
-        XCTAssertEqual(background.scheduledIntervals.last, 300)
+        XCTAssertEqual(foreground.scheduledIntervals.last, 60)
+        XCTAssertEqual(background.scheduledIntervals.last, 60)
     }
 
     @MainActor
@@ -852,10 +1330,10 @@ final class rssssTests: XCTestCase {
         controller.updateRefreshInterval(minutes: settings.refreshIntervalMinutes)
 
         await waitUntil(timeout: 2.0) {
-            foreground.scheduledIntervals.last == 600 && background.scheduledIntervals.last == 600
+            foreground.scheduledIntervals.last == 60 && background.scheduledIntervals.last == 60
         }
-        XCTAssertEqual(foreground.scheduledIntervals.last, 600)
-        XCTAssertEqual(background.scheduledIntervals.last, 600)
+        XCTAssertEqual(foreground.scheduledIntervals.last, 60)
+        XCTAssertEqual(background.scheduledIntervals.last, 60)
     }
 
     @MainActor
@@ -877,7 +1355,9 @@ final class rssssTests: XCTestCase {
 
         controller.start(refreshIntervalMinutes: settings.refreshIntervalMinutes)
         await background.runLatest()
-        XCTAssertEqual(feedRefresher.refreshAllCallCount, 1)
+        XCTAssertEqual(feedRefresher.roundRobinBatchCallCount, 1)
+        XCTAssertEqual(feedRefresher.lastTargetCycleInterval, 300)
+        XCTAssertEqual(feedRefresher.lastTickInterval, 60)
     }
 
     @MainActor
@@ -907,6 +1387,244 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(feeds?.map(\.url), ["https://b.example.com", "https://c.example.com", "https://a.example.com"])
     }
 
+    @MainActor
+    func testRoundRobinRefreshStartsAtFirstFeedWhenNoCursor() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshNextFeedInRoundRobin()
+
+        XCTAssertEqual(log.snapshot(), [feedAURL])
+        XCTAssertEqual(defaults.string(forKey: RefreshSettings.lastRoundRobinFeedURLKey), feedAURL.absoluteString)
+    }
+
+    @MainActor
+    func testRoundRobinRefreshAdvancesCursorEachTick() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        let feedCURL = URL(string: "https://example.com/c.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        addFeed(url: feedCURL.absoluteString, orderIndex: 2, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshNextFeedInRoundRobin()
+        await store.refreshNextFeedInRoundRobin()
+        await store.refreshNextFeedInRoundRobin()
+
+        XCTAssertEqual(log.snapshot(), [feedAURL, feedBURL, feedCURL])
+    }
+
+    @MainActor
+    func testRoundRobinRefreshWrapsAtEnd() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshNextFeedInRoundRobin()
+        await store.refreshNextFeedInRoundRobin()
+        await store.refreshNextFeedInRoundRobin()
+
+        XCTAssertEqual(log.snapshot(), [feedAURL, feedBURL, feedAURL])
+    }
+
+    @MainActor
+    func testRoundRobinRefreshAdvancesEvenWhenSelectedFeedFails() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        let feedCURL = URL(string: "https://example.com/c.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        addFeed(url: feedCURL.absoluteString, orderIndex: 2, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            if url == feedBURL {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("invalid-feed".utf8))
+            }
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshNextFeedInRoundRobin()
+        await store.refreshNextFeedInRoundRobin()
+        await store.refreshNextFeedInRoundRobin()
+
+        XCTAssertEqual(log.snapshot(), [feedAURL, feedBURL, feedCURL])
+        XCTAssertEqual(defaults.string(forKey: RefreshSettings.lastRoundRobinFeedURLKey), feedCURL.absoluteString)
+    }
+
+    @MainActor
+    func testRoundRobinRefreshHandlesDeletedCursorFeed() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        try? context.save()
+
+        defaults.set("https://example.com/deleted.xml", forKey: RefreshSettings.lastRoundRobinFeedURLKey)
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshNextFeedInRoundRobin()
+
+        XCTAssertEqual(log.snapshot(), [feedAURL])
+    }
+
+    @MainActor
+    func testRoundRobinBatchRefreshesAtLeastOneFeedForLongIntervals() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        let feedCURL = URL(string: "https://example.com/c.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        addFeed(url: feedCURL.absoluteString, orderIndex: 2, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshRoundRobinBatch(targetCycleInterval: 3600, tickInterval: 60)
+
+        XCTAssertEqual(log.snapshot(), [feedAURL])
+    }
+
+    @MainActor
+    func testRoundRobinBatchRefreshesScaledCountForShortIntervals() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        let feedCURL = URL(string: "https://example.com/c.xml")!
+        let feedDURL = URL(string: "https://example.com/d.xml")!
+        let feedEURL = URL(string: "https://example.com/e.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        addFeed(url: feedCURL.absoluteString, orderIndex: 2, in: context)
+        addFeed(url: feedDURL.absoluteString, orderIndex: 3, in: context)
+        addFeed(url: feedEURL.absoluteString, orderIndex: 4, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshRoundRobinBatch(targetCycleInterval: 300, tickInterval: 60)
+
+        XCTAssertEqual(log.snapshot(), [feedAURL])
+
+        await store.refreshRoundRobinBatch(targetCycleInterval: 120, tickInterval: 60)
+        XCTAssertEqual(log.snapshot(), [feedAURL, feedBURL, feedCURL, feedDURL])
+    }
+
     private func waitUntil(timeout: TimeInterval, condition: @escaping @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -914,14 +1632,63 @@ final class rssssTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
+
+    private static let sampleRSSData = Data(
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Example Feed</title>
+            <item>
+              <guid>item-1</guid>
+              <title>First item</title>
+              <link>https://example.com/item-1</link>
+            </item>
+          </channel>
+        </rss>
+        """.utf8
+    )
+
+    private func makeMockedSession(
+        handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
+    ) -> URLSession {
+        URLProtocolMock.requestHandler = handler
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolMock.self]
+        return URLSession(configuration: configuration)
+    }
+
+    @MainActor
+    private func addFeed(url: String, orderIndex: Int64, in context: NSManagedObjectContext) {
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = url
+        feed.orderIndex = orderIndex
+    }
+
+    private func isolatedDefaults() -> (defaults: UserDefaults, suiteName: String) {
+        let suiteName = "rssssTests.\(#function).\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            fatalError("Unable to create isolated defaults")
+        }
+        return (defaults, suiteName)
+    }
+
+    private func clear(defaults: UserDefaults, suiteName: String) {
+        defaults.removePersistentDomain(forName: suiteName)
+    }
 }
 
 @MainActor
 private final class MockFeedRefresher: FeedRefreshing {
-    private(set) var refreshAllCallCount = 0
+    private(set) var roundRobinBatchCallCount = 0
+    private(set) var lastTargetCycleInterval: TimeInterval?
+    private(set) var lastTickInterval: TimeInterval?
 
-    func refreshAllFeeds() async {
-        refreshAllCallCount += 1
+    func refreshRoundRobinBatch(targetCycleInterval: TimeInterval, tickInterval: TimeInterval) async {
+        roundRobinBatchCallCount += 1
+        lastTargetCycleInterval = targetCycleInterval
+        lastTickInterval = tickInterval
     }
 }
 
@@ -948,5 +1715,53 @@ private final class MockBackgroundRefreshScheduler: BackgroundRefreshScheduling 
 
     func runLatest() async {
         await latestAction?()
+    }
+}
+
+private final class URLProtocolMock: URLProtocol {
+    static var requestHandler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let handler = Self.requestHandler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+private final class URLRequestLog: @unchecked Sendable {
+    private var urls: [URL] = []
+    private let lock = NSLock()
+
+    func append(_ url: URL) {
+        lock.lock()
+        urls.append(url)
+        lock.unlock()
+    }
+
+    func snapshot() -> [URL] {
+        lock.lock()
+        let copy = urls
+        lock.unlock()
+        return copy
     }
 }

@@ -7,14 +7,17 @@ struct rssssApp: App {
     @StateObject private var feedStore: FeedStore
     @StateObject private var settingsStore: RefreshSettingsStore
     @StateObject private var autoRefreshController: AutoRefreshController
+    @StateObject private var logStore: AppLogStore
 
     init() {
         let persistence = PersistenceController.shared
-        let feedStore = FeedStore(persistence: persistence)
+        let logStore = AppLogStore()
+        let feedStore = FeedStore(persistence: persistence, logStore: logStore)
         let settingsStore = RefreshSettingsStore()
         _persistence = StateObject(wrappedValue: persistence)
         _feedStore = StateObject(wrappedValue: feedStore)
         _settingsStore = StateObject(wrappedValue: settingsStore)
+        _logStore = StateObject(wrappedValue: logStore)
         _autoRefreshController = StateObject(
             wrappedValue: AutoRefreshController(feedStore: feedStore)
         )
@@ -27,7 +30,8 @@ struct rssssApp: App {
                     persistence: persistence,
                     feedStore: feedStore,
                     settingsStore: settingsStore,
-                    autoRefreshController: autoRefreshController
+                    autoRefreshController: autoRefreshController,
+                    logStore: logStore
                 )
             } else {
                 ProgressView("Loading...")
@@ -35,6 +39,14 @@ struct rssssApp: App {
             }
         }
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            RefreshLogsCommands()
+        }
+
+        Window("Logs", id: "refresh-logs") {
+            LogsView()
+                .environmentObject(logStore)
+        }
 
         Settings {
             SettingsView()
@@ -48,11 +60,13 @@ private struct RootView: View {
     let feedStore: FeedStore
     let settingsStore: RefreshSettingsStore
     let autoRefreshController: AutoRefreshController
+    let logStore: AppLogStore
 
     var body: some View {
         ContentView(viewContext: persistence.container.viewContext)
             .environmentObject(feedStore)
             .environmentObject(settingsStore)
+            .environmentObject(logStore)
             .background(WindowChromeConfigurator().frame(width: 0, height: 0))
             .ignoresSafeArea(.container, edges: .top)
             .task {
@@ -64,6 +78,19 @@ private struct RootView: View {
             .onDisappear {
                 autoRefreshController.stop()
             }
+    }
+}
+
+private struct RefreshLogsCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandMenu("View") {
+            Button("Show Logs") {
+                openWindow(id: "refresh-logs")
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+        }
     }
 }
 

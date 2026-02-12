@@ -7,7 +7,8 @@ struct SidebarPaneView: View {
     let feeds: [Feed]
     let unreadCounts: [NSManagedObjectID: Int]
     let onDelete: (Feed) -> Void
-    let onAdd: () -> Void
+    let onAddFeed: () -> Void
+    let onAddOPML: () -> Void
 
     static var sidebarMaterial: NSVisualEffectView.Material { .sidebar }
     static let sidebarOpacity: CGFloat = 0.96
@@ -32,7 +33,8 @@ struct SidebarPaneView: View {
                 feeds: feeds,
                 unreadCounts: unreadCounts,
                 onDelete: onDelete,
-                onAdd: onAdd
+                onAddFeed: onAddFeed,
+                onAddOPML: onAddOPML
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

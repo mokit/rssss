@@ -3,8 +3,10 @@ import CoreData
 import AppKit
 
 struct FeedItemsView: View {
+    @EnvironmentObject private var logStore: AppLogStore
     private let viewContext: NSManagedObjectContext
     let feedObjectID: NSManagedObjectID
+    let initialItemsLimit: Int
     let showRead: Bool
     let sessionToken: UUID
     let onFeedBound: (NSManagedObjectID) -> Void
@@ -18,20 +20,30 @@ struct FeedItemsView: View {
     @State private var containerHeight: CGFloat = 0
     @State private var selectionChangedByKeyboard = false
     @State private var scrollProxy: ScrollViewProxy?
+    @State private var loadStartTime = Date()
+    @State private var didLogSelectionLoad = false
 
     init(
         feedObjectID: NSManagedObjectID,
+        initialItemsLimit: Int,
         showRead: Bool,
         sessionToken: UUID,
         viewContext: NSManagedObjectContext,
         onFeedBound: @escaping (NSManagedObjectID) -> Void
     ) {
         self.feedObjectID = feedObjectID
+        self.initialItemsLimit = initialItemsLimit
         self.showRead = showRead
         self.sessionToken = sessionToken
         self.viewContext = viewContext
         self.onFeedBound = onFeedBound
-        _itemsController = StateObject(wrappedValue: FeedItemsController(context: viewContext, feedObjectID: feedObjectID))
+        _itemsController = StateObject(
+            wrappedValue: FeedItemsController(
+                context: viewContext,
+                feedObjectID: feedObjectID,
+                initialFetchLimit: initialItemsLimit
+            )
+        )
     }
 
     var body: some View {
@@ -39,18 +51,26 @@ struct FeedItemsView: View {
 
         Group {
             if visibleItems.isEmpty {
-                VStack(spacing: 12) {
-                    Image("RSSSSLogo")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 56, height: 56)
-                        .foregroundStyle(.secondary)
-                    Text("No Items")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(FeedItemsView.emptyMessage(showRead: showRead))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                VStack(spacing: 14) {
+                    VStack(spacing: 12) {
+                        Image("RSSSSLogo")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 56, height: 56)
+                            .foregroundStyle(.secondary)
+                        Text("No Items")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(FeedItemsView.emptyMessage(showRead: showRead))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    if itemsController.canLoadMore {
+                        Button("Load older items") {
+                            loadOlderItems()
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -108,6 +128,20 @@ struct FeedItemsView: View {
                             ensureSelectionVisibility(in: visibleItems, proxy: proxy)
                             selectionChangedByKeyboard = false
                         }
+
+                        if itemsController.canLoadMore {
+                            Divider()
+                            HStack {
+                                Spacer()
+                                Button("Load older items") {
+                                    loadOlderItems()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                Spacer()
+                            }
+                            .padding(.vertical, 10)
+                        }
                     }
                     .onAppear {
                         scrollProxy = proxy
@@ -121,21 +155,57 @@ struct FeedItemsView: View {
             }
         }
         .task(id: feedObjectID) {
+            loadStartTime = Date()
+            didLogSelectionLoad = false
+            itemsController.resetFetchLimit(to: initialItemsLimit)
             onFeedBound(feedObjectID)
         }
         .task(id: sessionToken) {
             sessionUnreadIDs = Set(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
+            applyAutoExpandAndLogIfNeeded()
+        }
+        .onChange(of: showRead) { _, _ in
+            didLogSelectionLoad = false
+            applyAutoExpandAndLogIfNeeded()
+        }
+        .onChange(of: initialItemsLimit) { _, newLimit in
+            itemsController.resetFetchLimit(to: newLimit)
+            didLogSelectionLoad = false
+            applyAutoExpandAndLogIfNeeded()
         }
         .onChange(of: FeedItemsView.sessionUnreadSnapshot(items: itemsController.items)) { _, _ in
             sessionUnreadIDs = FeedItemsView.nextSessionUnreadIDs(
                 current: sessionUnreadIDs,
                 items: itemsController.items
             )
+            applyAutoExpandAndLogIfNeeded()
         }
     }
 
     private func filteredItems(from items: [FeedItem]) -> [FeedItem] {
         FeedItemsView.filteredItems(items: items, showRead: showRead, sessionUnreadIDs: sessionUnreadIDs)
+    }
+
+    private func loadOlderItems() {
+        itemsController.loadMore()
+    }
+
+    private func applyAutoExpandAndLogIfNeeded() {
+        guard !didLogSelectionLoad else { return }
+        let autoExpandedPages = itemsController.maybeAutoExpandForUnread(
+            showRead: showRead,
+            sessionUnreadIDs: sessionUnreadIDs
+        )
+        didLogSelectionLoad = true
+        logSelectionLoad(autoExpandedPages: autoExpandedPages)
+    }
+
+    private func logSelectionLoad(autoExpandedPages: Int) {
+        let elapsedMs = max(0, Int(Date().timeIntervalSince(loadStartTime) * 1000))
+        let feedURL = (try? viewContext.existingObject(with: feedObjectID) as? Feed)?.url ?? "unknown"
+        logStore.add(
+            "Feed selection load: feed=\(feedURL), feedID=\(feedObjectID.uriRepresentation().absoluteString), initialLimit=\(initialItemsLimit), autoExpandedPages=\(autoExpandedPages), fetched=\(itemsController.items.count), elapsedMs=\(elapsedMs)"
+        )
     }
 
     private func moveSelection(in items: [FeedItem], delta: Int) {

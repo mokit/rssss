@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 protocol FeedRefreshing: AnyObject {
-    func refreshAllFeeds() async
+    func refreshRoundRobinBatch(targetCycleInterval: TimeInterval, tickInterval: TimeInterval) async
 }
 
 extension FeedStore: FeedRefreshing {}
@@ -65,11 +65,15 @@ final class MacBackgroundRefreshScheduler: BackgroundRefreshScheduling {
 
 @MainActor
 final class AutoRefreshController: ObservableObject {
+    private static let roundRobinTickInterval: TimeInterval = 60
+
     private let feedStore: FeedRefreshing
     private let foregroundScheduler: ForegroundRefreshScheduling
     private let backgroundScheduler: BackgroundRefreshScheduling
 
     private var isStarted = false
+    private var targetCycleInterval: TimeInterval = RefreshSettings.refreshInterval(for: RefreshSettings.defaultRefreshIntervalMinutes)
+    private var tickInterval: TimeInterval = min(roundRobinTickInterval, RefreshSettings.refreshInterval(for: RefreshSettings.defaultRefreshIntervalMinutes))
 
     init(
         feedStore: FeedRefreshing,
@@ -99,20 +103,27 @@ final class AutoRefreshController: ObservableObject {
     }
 
     func performBackgroundRefresh() async {
-        await feedStore.refreshAllFeeds()
+        await feedStore.refreshRoundRobinBatch(
+            targetCycleInterval: targetCycleInterval,
+            tickInterval: tickInterval
+        )
     }
 
     private func reschedule(refreshIntervalMinutes: Int) {
-        let interval = RefreshSettings.refreshInterval(for: refreshIntervalMinutes)
+        targetCycleInterval = RefreshSettings.refreshInterval(for: refreshIntervalMinutes)
+        tickInterval = min(Self.roundRobinTickInterval, targetCycleInterval)
 
-        foregroundScheduler.schedule(interval: interval) { [weak self] in
+        foregroundScheduler.schedule(interval: tickInterval) { [weak self] in
             guard let self else { return }
             Task {
-                await self.feedStore.refreshAllFeeds()
+                await self.feedStore.refreshRoundRobinBatch(
+                    targetCycleInterval: self.targetCycleInterval,
+                    tickInterval: self.tickInterval
+                )
             }
         }
 
-        backgroundScheduler.schedule(interval: interval) { [weak self] in
+        backgroundScheduler.schedule(interval: tickInterval) { [weak self] in
             guard let self else { return }
             await self.performBackgroundRefresh()
         }

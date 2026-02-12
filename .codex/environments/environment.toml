@@ -8,8 +8,4 @@ script = ""
 [[actions]]
 name = "Run"
 icon = "run"
-command = '''
-cd /Users/hans/Documents/programming/swift/rssss
-xcodegen
-open rssss.xcodeproj
-'''
+command = "xcodebuild -scheme rssss -destination 'platform=macOS' build && open \"$(ls -dt ~/Library/Developer/Xcode/DerivedData/rssss-*/Build/Products/Debug/rssss.app | head -n1)\""

@@ -81,8 +81,27 @@ final class FeedItemsController: NSObject, ObservableObject, @preconcurrency NSF
     @Published private(set) var items: [FeedItem] = []
 
     private let controller: NSFetchedResultsController<FeedItem>
+    private let pageSize: Int
+    private var fetchLimit: Int
+    private static let maxAutoExpandPages = 5
 
-    init(context: NSManagedObjectContext, feedObjectID: NSManagedObjectID) {
+    var currentFetchLimit: Int {
+        fetchLimit
+    }
+
+    var canLoadMore: Bool {
+        !items.isEmpty && items.count >= fetchLimit
+    }
+
+    init(
+        context: NSManagedObjectContext,
+        feedObjectID: NSManagedObjectID,
+        initialFetchLimit: Int = RefreshSettings.defaultInitialFeedItemsLimit
+    ) {
+        let normalizedLimit = max(1, initialFetchLimit)
+        pageSize = normalizedLimit
+        fetchLimit = normalizedLimit
+
         let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
         if let feed = try? context.existingObject(with: feedObjectID) as? Feed {
             request.predicate = NSPredicate(format: "feed == %@", feed)
@@ -93,6 +112,8 @@ final class FeedItemsController: NSObject, ObservableObject, @preconcurrency NSF
             NSSortDescriptor(keyPath: \FeedItem.pubDate, ascending: false),
             NSSortDescriptor(keyPath: \FeedItem.createdAt, ascending: false)
         ]
+        request.fetchLimit = normalizedLimit
+        request.fetchBatchSize = normalizedLimit
         controller = NSFetchedResultsController(
             fetchRequest: request,
             managedObjectContext: context,
@@ -102,10 +123,52 @@ final class FeedItemsController: NSObject, ObservableObject, @preconcurrency NSF
         super.init()
         controller.delegate = self
         try? controller.performFetch()
-        items = (controller.fetchedObjects ?? []).filter { !$0.isDeleted && $0.managedObjectContext != nil }
+        applyFetchedObjects()
     }
 
     func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {
-        items = (self.controller.fetchedObjects ?? []).filter { !$0.isDeleted && $0.managedObjectContext != nil }
+        applyFetchedObjects()
+    }
+
+    func loadMore() {
+        resetFetchLimit(to: fetchLimit + pageSize)
+    }
+
+    func resetFetchLimit(to limit: Int) {
+        let normalizedLimit = max(1, limit)
+        fetchLimit = normalizedLimit
+        controller.fetchRequest.fetchLimit = normalizedLimit
+        controller.fetchRequest.fetchBatchSize = pageSize
+        try? controller.performFetch()
+        applyFetchedObjects()
+    }
+
+    @discardableResult
+    func maybeAutoExpandForUnread(showRead: Bool, sessionUnreadIDs: Set<NSManagedObjectID>) -> Int {
+        guard !showRead else { return 0 }
+
+        var expandedPages = 0
+        while expandedPages < Self.maxAutoExpandPages {
+            if Self.hasVisibleUnread(items: items, sessionUnreadIDs: sessionUnreadIDs) {
+                break
+            }
+            guard canLoadMore else {
+                break
+            }
+            loadMore()
+            expandedPages += 1
+        }
+
+        return expandedPages
+    }
+
+    private func applyFetchedObjects() {
+        items = (controller.fetchedObjects ?? []).filter { !$0.isDeleted && $0.managedObjectContext != nil }
+    }
+
+    private static func hasVisibleUnread(items: [FeedItem], sessionUnreadIDs: Set<NSManagedObjectID>) -> Bool {
+        items.contains { item in
+            !item.isRead || sessionUnreadIDs.contains(item.objectID)
+        }
     }
 }

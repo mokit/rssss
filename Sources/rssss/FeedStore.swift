@@ -17,6 +17,28 @@ struct ParsedItem {
     var pubDate: Date?
 }
 
+struct OPMLImportResult {
+    let addedCount: Int
+    let existingCount: Int
+    let feedObjectIDs: [NSManagedObjectID]
+    let skippedNonHTTPSCount: Int
+    let skippedNonHTTPSFeedURLs: [String]
+    let refreshFailures: [FeedRefreshFailure]
+
+    var importedCount: Int {
+        addedCount + existingCount
+    }
+
+    var refreshFailedCount: Int {
+        refreshFailures.count
+    }
+}
+
+struct FeedRefreshFailure: Equatable {
+    let feedURL: String
+    let reason: String
+}
+
 @MainActor
 final class FeedStore: ObservableObject {
     @Published var isRefreshing = false
@@ -32,10 +54,19 @@ final class FeedStore: ObservableObject {
 
     private let persistence: PersistenceController
     private let urlSession: URLSession
+    private let userDefaults: UserDefaults
+    private let logStore: AppLogStore?
 
-    init(persistence: PersistenceController, urlSession: URLSession? = nil) {
+    init(
+        persistence: PersistenceController,
+        urlSession: URLSession? = nil,
+        userDefaults: UserDefaults = .standard,
+        logStore: AppLogStore? = nil
+    ) {
         self.persistence = persistence
         self.urlSession = urlSession ?? FeedStore.makeURLSession()
+        self.userDefaults = userDefaults
+        self.logStore = logStore
     }
 
     func addFeed(urlString: String) throws -> Feed {
@@ -65,6 +96,57 @@ final class FeedStore: ObservableObject {
         return feed
     }
 
+    func importOPML(urlString: String) async throws -> OPMLImportResult {
+        let opmlURL = try validateOPMLURL(urlString: urlString)
+        let opmlData = try await fetchOPMLData(from: opmlURL)
+        let rawFeedURLs = try OPMLDocumentParser.parseFeedURLs(data: opmlData)
+        let sanitizeResult = sanitizeAndFilterHTTPSURLs(rawFeedURLs)
+        let feedURLs = sanitizeResult.urls
+        guard !feedURLs.isEmpty else { throw FeedError.opmlContainsNoValidFeeds }
+
+        var existingURLs = try fetchExistingFeedURLSet()
+        var feedObjectIDs: [NSManagedObjectID] = []
+        feedObjectIDs.reserveCapacity(feedURLs.count)
+
+        var addedCount = 0
+        var existingCount = 0
+        var refreshFailures: [FeedRefreshFailure] = []
+
+        for feedURL in feedURLs {
+            let wasExisting = existingURLs.contains(feedURL)
+            let feed = try addFeed(urlString: feedURL)
+            if wasExisting {
+                existingCount += 1
+            } else {
+                addedCount += 1
+                existingURLs.insert(feedURL)
+            }
+            feedObjectIDs.append(feed.objectID)
+        }
+
+        let context = persistence.container.viewContext
+        for feedObjectID in feedObjectIDs {
+            guard let feed = try? context.existingObject(with: feedObjectID) as? Feed else { continue }
+            do {
+                try await refresh(feed: feed)
+            } catch {
+                refreshFailures.append(
+                    FeedRefreshFailure(feedURL: feed.url, reason: error.localizedDescription)
+                )
+                logStore?.add("OPML refresh failed for \(feed.url): \(error.localizedDescription)")
+            }
+        }
+
+        return OPMLImportResult(
+            addedCount: addedCount,
+            existingCount: existingCount,
+            feedObjectIDs: feedObjectIDs,
+            skippedNonHTTPSCount: sanitizeResult.skippedNonHTTPSCount,
+            skippedNonHTTPSFeedURLs: sanitizeResult.skippedNonHTTPSFeedURLs,
+            refreshFailures: refreshFailures
+        )
+    }
+
     func deleteFeed(_ feed: Feed) throws {
         let context = persistence.container.viewContext
         guard feed.managedObjectContext === context, !feed.isDeleted else { return }
@@ -76,22 +158,33 @@ final class FeedStore: ObservableObject {
         guard let url = URL(string: feed.url) else { throw FeedError.invalidURL }
         isRefreshing = true
         defer { isRefreshing = false }
+        logStore?.add("Refresh started for \(feed.url)")
 
         let data: Data
         do {
             data = try await fetchFeedData(from: url)
         } catch let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection {
+            logStore?.add("Refresh failed for \(feed.url): \(FeedError.insecureURL.localizedDescription)")
             throw FeedError.insecureURL
+        } catch {
+            logStore?.add("Refresh failed for \(feed.url): \(error.localizedDescription)")
+            throw error
         }
-        let parsed = try parseFeed(data: data)
+        let parsed: ParsedFeed
+        do {
+            parsed = try parseFeed(data: data)
+        } catch {
+            logStore?.add("Refresh failed for \(feed.url): \(error.localizedDescription)")
+            throw error
+        }
 
         let container = persistence.container
         let feedObjectID = feed.objectID
         let context = container.newBackgroundContext()
         context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
 
-        try await context.perform {
-            guard let backgroundFeed = try? context.existingObject(with: feedObjectID) as? Feed else { return }
+        let insertedCount = try await context.perform { () -> Int in
+            guard let backgroundFeed = try? context.existingObject(with: feedObjectID) as? Feed else { return 0 }
             if let title = parsed.title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 backgroundFeed.title = title
             }
@@ -116,6 +209,7 @@ final class FeedStore: ObservableObject {
                 existingKeys.insert(key)
             }
 
+            var insertedCount = 0
             for parsedItem in parsed.items {
                 let key = Deduper.itemKey(
                     guid: parsedItem.guid,
@@ -131,18 +225,72 @@ final class FeedStore: ObservableObject {
                 newItem.guid = parsedItem.guid
                 newItem.link = parsedItem.link
                 newItem.title = parsedItem.title
-                newItem.summary = parsedItem.summary
+                newItem.summary = SummaryNormalizer.normalized(parsedItem.summary)
                 newItem.pubDate = parsedItem.pubDate
                 newItem.isRead = false
                 newItem.createdAt = Date()
                 newItem.feed = backgroundFeed
                 existingKeys.insert(key)
+                insertedCount += 1
             }
 
             if context.hasChanges {
                 try context.save()
             }
+            return insertedCount
         }
+        let dedupedCount = max(0, parsed.items.count - insertedCount)
+        logStore?.add(
+            "Refresh succeeded for \(feed.url); fetched=\(parsed.items.count), inserted=\(insertedCount), deduped=\(dedupedCount)"
+        )
+    }
+
+    func normalizeLegacySummaries(feedObjectID: NSManagedObjectID, maxItemsPerRun: Int = 500) async {
+        let clampedMaxItems = max(1, maxItemsPerRun)
+        let context = persistence.container.newBackgroundContext()
+        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+
+        let (feedURL, normalizedCount) = await context.perform { () -> (String?, Int) in
+            guard let feed = try? context.existingObject(with: feedObjectID) as? Feed else {
+                return (nil, 0)
+            }
+
+            let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
+            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                NSPredicate(format: "feed == %@", feed),
+                NSPredicate(format: "summary != nil")
+            ])
+            request.sortDescriptors = [
+                NSSortDescriptor(keyPath: \FeedItem.createdAt, ascending: false)
+            ]
+            request.fetchLimit = clampedMaxItems
+            request.fetchBatchSize = clampedMaxItems
+
+            let items = (try? context.fetch(request)) ?? []
+            guard !items.isEmpty else {
+                return (feed.url, 0)
+            }
+
+            var changedCount = 0
+            for item in items {
+                let normalized = SummaryNormalizer.normalized(item.summary)
+                if item.summary != normalized {
+                    item.summary = normalized
+                    changedCount += 1
+                }
+            }
+
+            if context.hasChanges {
+                try? context.save()
+            }
+
+            return (feed.url, changedCount)
+        }
+
+        guard normalizedCount > 0, let feedURL else { return }
+        logStore?.add(
+            "Normalized legacy summaries for \(feedURL); updated=\(normalizedCount), scanned=\(clampedMaxItems)"
+        )
     }
 
     private func fetchFeedData(from url: URL) async throws -> Data {
@@ -181,6 +329,70 @@ final class FeedStore: ObservableObject {
                 throw error
             }
         }
+    }
+
+    private func validateOPMLURL(urlString: String) throws -> URL {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https" else {
+            throw FeedError.invalidOPMLURL
+        }
+        return url
+    }
+
+    private func fetchOPMLData(from url: URL) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = Self.requestTimeout
+
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                throw FeedError.opmlFetchFailed
+            }
+            return data
+        } catch let error as FeedError {
+            throw error
+        } catch {
+            throw FeedError.opmlFetchFailed
+        }
+    }
+
+    private func sanitizeAndFilterHTTPSURLs(_ rawURLs: [String]) -> (urls: [String], skippedNonHTTPSCount: Int, skippedNonHTTPSFeedURLs: [String]) {
+        var deduped: [String] = []
+        var seen = Set<String>()
+        var skippedNonHTTPSCount = 0
+        var skippedNonHTTPSFeedURLs: [String] = []
+        var seenSkippedNonHTTPS = Set<String>()
+
+        for raw in rawURLs {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard let url = URL(string: trimmed) else { continue }
+            guard url.scheme?.lowercased() == "https" else {
+                skippedNonHTTPSCount += 1
+                let candidate = url.absoluteString
+                if !seenSkippedNonHTTPS.contains(candidate) {
+                    seenSkippedNonHTTPS.insert(candidate)
+                    skippedNonHTTPSFeedURLs.append(candidate)
+                }
+                continue
+            }
+            let canonical = url.absoluteString
+            guard !seen.contains(canonical) else { continue }
+            seen.insert(canonical)
+            deduped.append(canonical)
+        }
+
+        return (deduped, skippedNonHTTPSCount, skippedNonHTTPSFeedURLs)
+    }
+
+    private func fetchExistingFeedURLSet() throws -> Set<String> {
+        let context = persistence.container.viewContext
+        let request = NSFetchRequest<NSDictionary>(entityName: "Feed")
+        request.resultType = .dictionaryResultType
+        request.propertiesToFetch = ["url"]
+
+        let results = try context.fetch(request)
+        return Set(results.compactMap { $0["url"] as? String })
     }
 
     private func shouldRetry(_ error: URLError) -> Bool {
@@ -223,6 +435,71 @@ final class FeedStore: ObservableObject {
             } catch {
                 continue
             }
+        }
+    }
+
+    func refreshNextFeedInRoundRobin() async {
+        guard !isRefreshing else { return }
+
+        let feeds: [Feed]
+        do {
+            feeds = try fetchFeedsForRefresh()
+        } catch {
+            return
+        }
+
+        guard !feeds.isEmpty else {
+            clearRoundRobinCursor()
+            return
+        }
+
+        let selectedFeedIndex: Int
+        if let cursorURL = roundRobinCursorFeedURL(),
+           let currentIndex = feeds.firstIndex(where: { $0.url == cursorURL }) {
+            selectedFeedIndex = (currentIndex + 1) % feeds.count
+        } else {
+            selectedFeedIndex = 0
+        }
+
+        let selectedFeed = feeds[selectedFeedIndex]
+        setRoundRobinCursorFeedURL(selectedFeed.url)
+        logStore?.add("Round-robin selecting feed \(selectedFeed.url)")
+
+        do {
+            try await refresh(feed: selectedFeed)
+        } catch {
+            Self.logger.error(
+                "Round-robin refresh failed for \(selectedFeed.url, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            logStore?.add("Round-robin refresh failed for \(selectedFeed.url): \(error.localizedDescription)")
+        }
+    }
+
+    func refreshRoundRobinBatch(targetCycleInterval: TimeInterval, tickInterval: TimeInterval) async {
+        guard targetCycleInterval > 0, tickInterval > 0 else { return }
+
+        let feeds: [Feed]
+        do {
+            feeds = try fetchFeedsForRefresh()
+        } catch {
+            return
+        }
+
+        let feedCount = feeds.count
+        guard feedCount > 0 else {
+            clearRoundRobinCursor()
+            return
+        }
+
+        let ratio = min(1, tickInterval / targetCycleInterval)
+        let scaledCount = Int(ceil(Double(feedCount) * ratio))
+        let batchSize = max(1, min(feedCount, scaledCount))
+        logStore?.add(
+            "Round-robin batch refresh starting: feeds=\(feedCount), batchSize=\(batchSize), tick=\(Int(tickInterval))s, targetCycle=\(Int(targetCycleInterval))s"
+        )
+
+        for _ in 0..<batchSize {
+            await refreshNextFeedInRoundRobin()
         }
     }
 
@@ -299,13 +576,22 @@ final class FeedStore: ObservableObject {
                         return
                     }
 
-                    let batchUpdate = NSBatchUpdateRequest(entityName: "FeedItem")
-                    batchUpdate.predicate = NSPredicate(format: "feed == %@", backgroundFeed)
-                    batchUpdate.propertiesToUpdate = ["isRead": true]
-                    batchUpdate.resultType = .updatedObjectIDsResultType
+                    let fetchRequest = NSFetchRequest<FeedItem>(entityName: "FeedItem")
+                    fetchRequest.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                        NSPredicate(format: "feed == %@", backgroundFeed),
+                        NSPredicate(format: "isRead == NO")
+                    ])
+                    let items = try context.fetch(fetchRequest)
+                    guard !items.isEmpty else {
+                        continuation.resume(returning: [])
+                        return
+                    }
 
-                    let result = try context.execute(batchUpdate) as? NSBatchUpdateResult
-                    let objectIDs = result?.result as? [NSManagedObjectID] ?? []
+                    for item in items {
+                        item.isRead = true
+                    }
+                    try context.save()
+                    let objectIDs = items.map(\.objectID)
                     continuation.resume(returning: objectIDs)
                 } catch {
                     continuation.resume(throwing: error)
@@ -335,12 +621,28 @@ final class FeedStore: ObservableObject {
         }
         return 0
     }
+
+    private func roundRobinCursorFeedURL() -> String? {
+        userDefaults.string(forKey: RefreshSettings.lastRoundRobinFeedURLKey)
+    }
+
+    private func setRoundRobinCursorFeedURL(_ url: String) {
+        userDefaults.set(url, forKey: RefreshSettings.lastRoundRobinFeedURLKey)
+    }
+
+    private func clearRoundRobinCursor() {
+        userDefaults.removeObject(forKey: RefreshSettings.lastRoundRobinFeedURLKey)
+    }
 }
 
 enum FeedError: LocalizedError, Equatable {
     case invalidURL
     case insecureURL
     case parseFailed
+    case invalidOPMLURL
+    case opmlFetchFailed
+    case opmlParseFailed
+    case opmlContainsNoValidFeeds
 
     var errorDescription: String? {
         switch self {
@@ -350,7 +652,39 @@ enum FeedError: LocalizedError, Equatable {
             return "This feed URL uses HTTP. Please use an HTTPS feed URL instead."
         case .parseFailed:
             return "Unable to parse this feed."
+        case .invalidOPMLURL:
+            return "Please enter a valid HTTPS OPML URL."
+        case .opmlFetchFailed:
+            return "Unable to download this OPML file."
+        case .opmlParseFailed:
+            return "Unable to parse this OPML file."
+        case .opmlContainsNoValidFeeds:
+            return "No valid HTTPS feed URLs were found in this OPML file."
         }
+    }
+}
+
+final class OPMLDocumentParser: NSObject, XMLParserDelegate {
+    private var feedURLs: [String] = []
+
+    static func parseFeedURLs(data: Data) throws -> [String] {
+        let parserDelegate = OPMLDocumentParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = parserDelegate
+        guard parser.parse() else {
+            throw FeedError.opmlParseFailed
+        }
+        return parserDelegate.feedURLs
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
+        guard elementName.caseInsensitiveCompare("outline") == .orderedSame else { return }
+        guard let xmlURL = attributeDict.first(where: { $0.key.caseInsensitiveCompare("xmlUrl") == .orderedSame })?.value else {
+            return
+        }
+        let trimmed = xmlURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        feedURLs.append(trimmed)
     }
 }
 
@@ -362,23 +696,21 @@ enum Deduper {
         }
 
         let trimmedLink = link?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedLink, !trimmedLink.isEmpty {
-            if let pubDate {
-                return "link:\(trimmedLink)|date:\(Int(pubDate.timeIntervalSince1970))"
-            }
-            return "link:\(trimmedLink)"
-        }
-
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var components: [String] = []
+        if let trimmedLink, !trimmedLink.isEmpty {
+            components.append("link:\(trimmedLink)")
+        }
         if let trimmedTitle, !trimmedTitle.isEmpty {
-            if let pubDate {
-                return "title:\(trimmedTitle)|date:\(Int(pubDate.timeIntervalSince1970))"
-            }
-            return "title:\(trimmedTitle)"
+            components.append("title:\(trimmedTitle)")
         }
 
         if let pubDate {
-            return "date:\(Int(pubDate.timeIntervalSince1970))"
+            components.append("date:\(Int(pubDate.timeIntervalSince1970))")
+        }
+
+        if !components.isEmpty {
+            return components.joined(separator: "|")
         }
 
         return UUID().uuidString
