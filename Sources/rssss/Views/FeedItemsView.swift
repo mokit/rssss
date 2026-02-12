@@ -10,6 +10,7 @@ struct FeedItemsView: View {
     let showRead: Bool
     let sessionToken: UUID
     let onFeedBound: (NSManagedObjectID) -> Void
+    let onOpenInPreview: (PreviewRequest) -> Void
 
     @StateObject private var readMarker = ReadMarker(persistence: PersistenceController.shared)
     @StateObject private var itemsController: FeedItemsController
@@ -29,7 +30,8 @@ struct FeedItemsView: View {
         showRead: Bool,
         sessionToken: UUID,
         viewContext: NSManagedObjectContext,
-        onFeedBound: @escaping (NSManagedObjectID) -> Void
+        onFeedBound: @escaping (NSManagedObjectID) -> Void,
+        onOpenInPreview: @escaping (PreviewRequest) -> Void
     ) {
         self.feedObjectID = feedObjectID
         self.initialItemsLimit = initialItemsLimit
@@ -37,6 +39,7 @@ struct FeedItemsView: View {
         self.sessionToken = sessionToken
         self.viewContext = viewContext
         self.onFeedBound = onFeedBound
+        self.onOpenInPreview = onOpenInPreview
         _itemsController = StateObject(
             wrappedValue: FeedItemsController(
                 context: viewContext,
@@ -254,8 +257,8 @@ struct FeedItemsView: View {
     }
 
     private func openItem(_ item: FeedItem) {
-        guard let link = item.link, let url = URL(string: link) else { return }
-        NSWorkspace.shared.open(url)
+        guard let request = FeedItemsView.previewRequest(for: item) else { return }
+        onOpenInPreview(request)
     }
 
     private func ensureSelectionVisibility(in items: [FeedItem], proxy: ScrollViewProxy) {
@@ -372,6 +375,19 @@ extension FeedItemsView {
     static func openTarget(selectedItemID: NSManagedObjectID?, items: [FeedItem]) -> FeedItem? {
         guard let selectedItemID else { return nil }
         return items.first(where: { $0.objectID == selectedItemID })
+    }
+
+    static func previewRequest(for item: FeedItem) -> PreviewRequest? {
+        guard
+            let link = item.link,
+            let url = URL(string: link),
+            let scheme = url.scheme?.lowercased(),
+            (scheme == "https" || scheme == "http"),
+            url.host != nil
+        else {
+            return nil
+        }
+        return PreviewRequest(url: url, title: item.displayTitle)
     }
 
     static func anchorToRevealSelection(selectedFrame: CGRect, nextFrame: CGRect?, containerHeight: CGFloat) -> UnitPoint? {

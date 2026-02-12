@@ -31,6 +31,7 @@
 		D26F85D1074F74A569C9A22D /* FeedStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF768DB6EA24CD323A6C594 /* FeedStore.swift */; };
 		D8B3C4E6CB79105D9FBDF88A /* AutoRefreshController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FB9FE229146F64F2B26C387 /* AutoRefreshController.swift */; };
 		DAAD91C57FD12E07644D4C01 /* AddFeedSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70D70962714FE7916D51A9D5 /* AddFeedSheet.swift */; };
+		E1A7D35F0B87427A9D5C1E20 /* WebPreviewPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2B8E46A1C93538BAD6E2F31 /* WebPreviewPaneView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,6 +69,7 @@
 		E4E103CD285088D8478A6767 /* rssss.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = rssss.swift; sourceTree = "<group>"; };
 		E86D77BFB1F60AD47898E8AD /* Persistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence.swift; sourceTree = "<group>"; };
 		EBAF6292E472B36F6FE94567 /* rssssTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = rssssTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F2B8E46A1C93538BAD6E2F31 /* WebPreviewPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebPreviewPaneView.swift; sourceTree = "<group>"; };
 		F6FD58B52F22F36273C45D4C /* rssssTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = rssssTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -141,6 +143,7 @@
 					B3C4D5E6F708192A3B4C5D6E /* LogsView.swift */,
 					D8B1D7B31A685266286F1F10 /* SettingsView.swift */,
 					71625CE269A9810E0744D174 /* SidebarPaneView.swift */,
+					F2B8E46A1C93538BAD6E2F31 /* WebPreviewPaneView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -278,6 +281,7 @@
 					C9BB4872E9C0836C92EF4F11 /* SettingsView.swift in Sources */,
 					1965D183306F1F22548E931A /* SidebarPaneView.swift in Sources */,
 					73E8F9A0B1C2D3E4F5A60718 /* SummaryNormalizer.swift in Sources */,
+					E1A7D35F0B87427A9D5C1E20 /* WebPreviewPaneView.swift in Sources */,
 					641F0CD4D0DD9EAD4F2FD082 /* rssss.swift in Sources */,
 				);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -667,6 +667,12 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(ContentView.detailMinWidth, 380)
     }
 
+    func testContentViewPreviewPaneWidths() {
+        XCTAssertEqual(ContentView.feedItemsPaneMinWidth, 380)
+        XCTAssertEqual(ContentView.previewPaneMinWidth, 340)
+        XCTAssertEqual(ContentView.previewPaneIdealWidth, 520)
+    }
+
     func testFeedSidebarBottomBarLayoutConstants() {
         XCTAssertEqual(FeedSidebarView.bottomBarVerticalPadding, 10)
         XCTAssertEqual(FeedSidebarView.bottomBarHorizontalPadding, 10)
@@ -1196,6 +1202,54 @@ final class rssssTests: XCTestCase {
 
         let target = FeedItemsView.openTarget(selectedItemID: second.objectID, items: [first, second])
         XCTAssertEqual(target?.objectID, second.objectID)
+    }
+
+    func testPreviewAfterFeedSelectionChangeClearsExistingPreview() {
+        let request = PreviewRequest(
+            url: URL(string: "https://example.com/article")!,
+            title: "Example"
+        )
+        XCTAssertNil(ContentView.previewAfterFeedSelectionChange(current: request))
+    }
+
+    @MainActor
+    func testPreviewRequestReturnsNilForInvalidLink() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.title = "Bad link"
+        item.link = "not a url"
+
+        XCTAssertNil(FeedItemsView.previewRequest(for: item))
+    }
+
+    @MainActor
+    func testPreviewRequestReturnsURLAndTitleForValidLink() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.title = "Example title"
+        item.link = "https://example.com/post"
+
+        let request = FeedItemsView.previewRequest(for: item)
+        XCTAssertEqual(request?.url, URL(string: "https://example.com/post"))
+        XCTAssertEqual(request?.title, "Example title")
     }
 
     @MainActor

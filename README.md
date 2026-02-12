@@ -95,8 +95,12 @@ This is the most reliable command here; `swift test` can fail in restricted envi
 
 - `Sources/rssss/Views/FeedItemsView.swift`
   - Item list rendering.
-  - Keyboard navigation (`j/k`, arrow keys, `o` to open).
+  - Keyboard navigation (`j/k`, arrow keys, `o` to open in in-app preview).
   - Read-tracking integration as items scroll past.
+
+- `Sources/rssss/Views/WebPreviewPaneView.swift`
+  - Embedded webpage preview pane (`WKWebView`) for item links.
+  - Includes explicit `Open in Browser` action in the preview header.
 
 - `Sources/rssss/ReadTracking.swift`
   - Determines which item rows are past viewport top.

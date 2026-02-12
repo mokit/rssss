@@ -25,6 +25,7 @@ struct ContentView: View {
     @State private var detailReloadToken = UUID()
     @State private var isDetailBinding = false
     @State private var boundDetailFeedID: NSManagedObjectID?
+    @State private var previewRequest: PreviewRequest?
 
     init(viewContext: NSManagedObjectContext) {
         self.viewContext = viewContext
@@ -101,6 +102,7 @@ struct ContentView: View {
             isDetailBinding = selectedFeedID != nil
             boundDetailFeedID = nil
             detailReloadToken = UUID()
+            previewRequest = ContentView.previewAfterFeedSelectionChange(current: previewRequest)
 
             if let selectedFeedID {
                 Task {
@@ -136,22 +138,22 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if let feed = selectedFeed {
-            VStack(alignment: .leading, spacing: 0) {
-                detailHeader(for: feed)
-
-                FeedItemsView(
-                    feedObjectID: feed.objectID,
-                    initialItemsLimit: settingsStore.initialFeedItemsLimit,
-                    showRead: showRead,
-                    sessionToken: sessionToken,
-                    viewContext: viewContext,
-                    onFeedBound: { boundFeedID in
-                        guard boundFeedID == selectedFeedID else { return }
-                        boundDetailFeedID = boundFeedID
-                        isDetailBinding = false
-                    }
-                )
-                .id("\(feed.objectID.uriRepresentation().absoluteString)#\(detailReloadToken.uuidString)")
+            if let previewRequest {
+                HSplitView {
+                    feedItemsPane(for: feed)
+                        .frame(minWidth: ContentView.feedItemsPaneMinWidth, maxWidth: .infinity)
+                    WebPreviewPaneView(
+                        request: previewRequest,
+                        onClose: { self.previewRequest = nil }
+                    )
+                    .frame(
+                        minWidth: ContentView.previewPaneMinWidth,
+                        idealWidth: ContentView.previewPaneIdealWidth,
+                        maxWidth: .infinity
+                    )
+                }
+            } else {
+                feedItemsPane(for: feed)
             }
         } else {
             VStack {
@@ -163,6 +165,29 @@ struct ContentView: View {
                     .opacity(0.75)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func feedItemsPane(for feed: Feed) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            detailHeader(for: feed)
+
+            FeedItemsView(
+                feedObjectID: feed.objectID,
+                initialItemsLimit: settingsStore.initialFeedItemsLimit,
+                showRead: showRead,
+                sessionToken: sessionToken,
+                viewContext: viewContext,
+                onFeedBound: { boundFeedID in
+                    guard boundFeedID == selectedFeedID else { return }
+                    boundDetailFeedID = boundFeedID
+                    isDetailBinding = false
+                },
+                onOpenInPreview: { request in
+                    previewRequest = request
+                }
+            )
+            .id("\(feed.objectID.uriRepresentation().absoluteString)#\(detailReloadToken.uuidString)")
         }
     }
 
@@ -273,6 +298,9 @@ extension ContentView {
     static let sidebarIdealWidth: CGFloat = 260
     static let sidebarMaxWidth: CGFloat = 360
     static let detailMinWidth: CGFloat = 380
+    static let feedItemsPaneMinWidth: CGFloat = 380
+    static let previewPaneMinWidth: CGFloat = 340
+    static let previewPaneIdealWidth: CGFloat = 520
 
     private static let lastRefreshFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -333,6 +361,11 @@ extension ContentView {
         return remainingFeeds.first?.objectID
     }
 
+    static func previewAfterFeedSelectionChange(current: PreviewRequest?) -> PreviewRequest? {
+        guard current != nil else { return nil }
+        return nil
+    }
+
     static func opmlImportSummary(result: OPMLImportResult) -> String? {
         guard result.skippedNonHTTPSCount > 0 || result.refreshFailedCount > 0 else {
             return nil
@@ -359,4 +392,9 @@ extension ContentView {
 
         return lines.joined(separator: "\n")
     }
+}
+
+struct PreviewRequest: Equatable {
+    let url: URL
+    let title: String
 }
