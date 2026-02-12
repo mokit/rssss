@@ -11,6 +11,7 @@ struct ContentView: View {
 
     @EnvironmentObject private var feedStore: FeedStore
     @EnvironmentObject private var settingsStore: RefreshSettingsStore
+    @EnvironmentObject private var performanceMonitor: PerformanceMonitor
 
     private let viewContext: NSManagedObjectContext
     @StateObject private var feedsController: FeedsController
@@ -268,6 +269,17 @@ struct ContentView: View {
             }
 
             Spacer(minLength: 0)
+
+
+            if settingsStore.monitorPerformance, let sample = performanceMonitor.latestSample {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(String(format: "CPU %.1f%%", sample.cpuUsagePercent))
+                    Text(String(format: "Memory %.1f MB", sample.memoryUsedMegabytes))
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .padding(.trailing, 4)
+            }
 
             HStack(spacing: 10) {
                 Button {

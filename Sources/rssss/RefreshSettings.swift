@@ -8,6 +8,8 @@ enum RefreshSettings {
     static let lastRoundRobinFeedURLKey = "lastRoundRobinFeedURL"
     static let defaultRefreshIntervalMinutes = 5
     static let defaultShowLastRefresh = true
+    static let monitorPerformanceKey = "monitorPerformance"
+    static let defaultMonitorPerformance = false
     static let minimumRefreshIntervalMinutes = 1
     static let maximumRefreshIntervalMinutes = 60
     static let defaultInitialFeedItemsLimit = 300
@@ -54,22 +56,30 @@ final class RefreshSettingsStore: ObservableObject {
             userDefaults.set(normalized, forKey: initialFeedItemsLimitKey)
         }
     }
+    @Published var monitorPerformance: Bool {
+        didSet {
+            userDefaults.set(monitorPerformance, forKey: monitorPerformanceKey)
+        }
+    }
 
     private let userDefaults: UserDefaults
     private let key: String
     private let showLastRefreshKey: String
     private let initialFeedItemsLimitKey: String
+    private let monitorPerformanceKey: String
 
     init(
         userDefaults: UserDefaults = .standard,
         key: String = RefreshSettings.refreshIntervalMinutesKey,
         showLastRefreshKey: String = RefreshSettings.showLastRefreshKey,
-        initialFeedItemsLimitKey: String = RefreshSettings.initialFeedItemsLimitKey
+        initialFeedItemsLimitKey: String = RefreshSettings.initialFeedItemsLimitKey,
+        monitorPerformanceKey: String = RefreshSettings.monitorPerformanceKey
     ) {
         self.userDefaults = userDefaults
         self.key = key
         self.showLastRefreshKey = showLastRefreshKey
         self.initialFeedItemsLimitKey = initialFeedItemsLimitKey
+        self.monitorPerformanceKey = monitorPerformanceKey
 
         let storedValue = userDefaults.object(forKey: key) as? Int
         let initial = RefreshSettings.normalizedRefreshInterval(
@@ -87,6 +97,11 @@ final class RefreshSettingsStore: ObservableObject {
             userDefaults.set(RefreshSettings.defaultShowLastRefresh, forKey: showLastRefreshKey)
         }
         showLastRefresh = userDefaults.bool(forKey: showLastRefreshKey)
+
+        if userDefaults.object(forKey: monitorPerformanceKey) == nil {
+            userDefaults.set(RefreshSettings.defaultMonitorPerformance, forKey: monitorPerformanceKey)
+        }
+        monitorPerformance = userDefaults.bool(forKey: monitorPerformanceKey)
 
         if storedValue != initial {
             userDefaults.set(initial, forKey: key)

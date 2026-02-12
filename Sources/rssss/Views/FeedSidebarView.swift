@@ -88,18 +88,37 @@ struct FeedSidebarTableView: NSViewRepresentable {
         if let tableView = context.coordinator.tableView {
             let currentIDs = feeds.map(\.objectID)
             let currentUnreadCounts = unreadCounts
-            if Coordinator.shouldReloadData(
-                currentFeedIDs: currentIDs,
-                previousFeedIDs: context.coordinator.lastFeedIDs,
-                currentUnreadCounts: currentUnreadCounts,
-                previousUnreadCounts: context.coordinator.lastUnreadCounts,
-                currentStarredCount: starredCount,
-                previousStarredCount: context.coordinator.lastStarredCount
-            ) {
+
+            if currentIDs != context.coordinator.lastFeedIDs {
                 context.coordinator.lastFeedIDs = currentIDs
                 context.coordinator.lastUnreadCounts = currentUnreadCounts
                 context.coordinator.lastStarredCount = starredCount
                 tableView.reloadData()
+                context.coordinator.syncSelection(to: selection)
+                return
+            }
+
+            var rowsToReload = IndexSet()
+            if starredCount != context.coordinator.lastStarredCount {
+                context.coordinator.lastStarredCount = starredCount
+                rowsToReload.insert(0)
+            }
+
+            if currentUnreadCounts != context.coordinator.lastUnreadCounts {
+                let changedFeedIDs = Coordinator.changedUnreadFeedIDs(
+                    currentUnreadCounts: currentUnreadCounts,
+                    previousUnreadCounts: context.coordinator.lastUnreadCounts
+                )
+                context.coordinator.lastUnreadCounts = currentUnreadCounts
+                for feedID in changedFeedIDs {
+                    if let index = currentIDs.firstIndex(of: feedID) {
+                        rowsToReload.insert(index + 1)
+                    }
+                }
+            }
+
+            if !rowsToReload.isEmpty {
+                tableView.reloadData(forRowIndexes: rowsToReload, columnIndexes: IndexSet(integer: 0))
             }
             context.coordinator.syncSelection(to: selection)
         }
@@ -127,6 +146,18 @@ struct FeedSidebarTableView: NSViewRepresentable {
             currentFeedIDs != previousFeedIDs ||
             currentUnreadCounts != previousUnreadCounts ||
             currentStarredCount != previousStarredCount
+        }
+
+        static func changedUnreadFeedIDs(
+            currentUnreadCounts: [NSManagedObjectID: Int],
+            previousUnreadCounts: [NSManagedObjectID: Int]
+        ) -> Set<NSManagedObjectID> {
+            var changed = Set<NSManagedObjectID>()
+            let ids = Set(currentUnreadCounts.keys).union(previousUnreadCounts.keys)
+            for id in ids where currentUnreadCounts[id, default: 0] != previousUnreadCounts[id, default: 0] {
+                changed.insert(id)
+            }
+            return changed
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {

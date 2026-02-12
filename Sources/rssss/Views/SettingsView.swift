@@ -20,6 +20,7 @@ struct SettingsView: View {
             }
             Section("Display") {
                 Toggle("Show last refresh time per feed", isOn: $settingsStore.showLastRefresh)
+                Toggle("Monitor app performance (CPU and memory)", isOn: $settingsStore.monitorPerformance)
             }
             Section("Performance") {
                 HStack {

@@ -8,6 +8,7 @@ struct rssssApp: App {
     @StateObject private var settingsStore: RefreshSettingsStore
     @StateObject private var autoRefreshController: AutoRefreshController
     @StateObject private var logStore: AppLogStore
+    @StateObject private var performanceMonitor: PerformanceMonitor
 
     init() {
         let persistence = PersistenceController.shared
@@ -21,6 +22,7 @@ struct rssssApp: App {
         _autoRefreshController = StateObject(
             wrappedValue: AutoRefreshController(feedStore: feedStore)
         )
+        _performanceMonitor = StateObject(wrappedValue: PerformanceMonitor())
     }
 
     var body: some Scene {
@@ -31,7 +33,8 @@ struct rssssApp: App {
                     feedStore: feedStore,
                     settingsStore: settingsStore,
                     autoRefreshController: autoRefreshController,
-                    logStore: logStore
+                    logStore: logStore,
+                    performanceMonitor: performanceMonitor
                 )
             } else {
                 ProgressView("Loading...")
@@ -61,22 +64,35 @@ private struct RootView: View {
     let settingsStore: RefreshSettingsStore
     let autoRefreshController: AutoRefreshController
     let logStore: AppLogStore
+    let performanceMonitor: PerformanceMonitor
 
     var body: some View {
         ContentView(viewContext: persistence.container.viewContext)
             .environmentObject(feedStore)
             .environmentObject(settingsStore)
             .environmentObject(logStore)
+            .environmentObject(performanceMonitor)
             .background(WindowChromeConfigurator().frame(width: 0, height: 0))
             .ignoresSafeArea(.container, edges: .top)
             .task {
                 autoRefreshController.start(refreshIntervalMinutes: settingsStore.refreshIntervalMinutes)
+                if settingsStore.monitorPerformance {
+                    performanceMonitor.start()
+                }
             }
             .onChange(of: settingsStore.refreshIntervalMinutes) { _, newValue in
                 autoRefreshController.updateRefreshInterval(minutes: newValue)
             }
+            .onChange(of: settingsStore.monitorPerformance) { _, enabled in
+                if enabled {
+                    performanceMonitor.start()
+                } else {
+                    performanceMonitor.stop()
+                }
+            }
             .onDisappear {
                 autoRefreshController.stop()
+                performanceMonitor.stop()
             }
     }
 }
