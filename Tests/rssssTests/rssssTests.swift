@@ -1940,6 +1940,35 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(log.snapshot(), [feedAURL, feedBURL, feedCURL, feedDURL])
     }
 
+    @MainActor
+    func testRoundRobinBatchRespectsMinimumIntervalPerFeed() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let (defaults, suiteName) = isolatedDefaults()
+        defer { clear(defaults: defaults, suiteName: suiteName) }
+
+        let feedURL = URL(string: "https://example.com/a.xml")!
+        addFeed(url: feedURL.absoluteString, orderIndex: 0, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Self.sampleRSSData)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session, userDefaults: defaults)
+        await store.refreshRoundRobinBatch(targetCycleInterval: 300, tickInterval: 60)
+        await store.refreshRoundRobinBatch(targetCycleInterval: 300, tickInterval: 60)
+
+        XCTAssertEqual(log.snapshot(), [feedURL])
+    }
+
     private func waitUntil(timeout: TimeInterval, condition: @escaping @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -1974,11 +2003,17 @@ final class rssssTests: XCTestCase {
     }
 
     @MainActor
-    private func addFeed(url: String, orderIndex: Int64, in context: NSManagedObjectContext) {
+    private func addFeed(
+        url: String,
+        orderIndex: Int64,
+        lastRefreshedAt: Date? = nil,
+        in context: NSManagedObjectContext
+    ) {
         let feed = Feed(context: context)
         feed.id = UUID()
         feed.url = url
         feed.orderIndex = orderIndex
+        feed.lastRefreshedAt = lastRefreshedAt
     }
 
     private func isolatedDefaults() -> (defaults: UserDefaults, suiteName: String) {

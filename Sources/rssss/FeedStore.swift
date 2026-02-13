@@ -439,7 +439,10 @@ final class FeedStore: ObservableObject {
         }
     }
 
-    func refreshNextFeedInRoundRobin() async {
+    func refreshNextFeedInRoundRobin(
+        minimumIntervalBetweenRefreshes: TimeInterval? = nil,
+        referenceDate: Date = Date()
+    ) async {
         guard !isRefreshing else { return }
 
         let feeds: [Feed]
@@ -465,6 +468,19 @@ final class FeedStore: ObservableObject {
         let selectedFeed = feeds[selectedFeedIndex]
         setRoundRobinCursorFeedURL(selectedFeed.url)
         logStore?.add("Round-robin selecting feed \(selectedFeed.url)")
+
+        if let minimumIntervalBetweenRefreshes,
+           minimumIntervalBetweenRefreshes > 0,
+           !isFeedDueForRoundRobinRefresh(
+                selectedFeed,
+                minimumInterval: minimumIntervalBetweenRefreshes,
+                now: referenceDate
+           ) {
+            logStore?.add(
+                "Round-robin skipping feed \(selectedFeed.url); refreshed too recently for \(Int(minimumIntervalBetweenRefreshes))s minimum interval"
+            )
+            return
+        }
 
         do {
             try await refresh(feed: selectedFeed)
@@ -500,7 +516,9 @@ final class FeedStore: ObservableObject {
         )
 
         for _ in 0..<batchSize {
-            await refreshNextFeedInRoundRobin()
+            await refreshNextFeedInRoundRobin(
+                minimumIntervalBetweenRefreshes: targetCycleInterval
+            )
         }
     }
 
@@ -658,6 +676,17 @@ final class FeedStore: ObservableObject {
 
     private func clearRoundRobinCursor() {
         userDefaults.removeObject(forKey: RefreshSettings.lastRoundRobinFeedURLKey)
+    }
+
+    private func isFeedDueForRoundRobinRefresh(
+        _ feed: Feed,
+        minimumInterval: TimeInterval,
+        now: Date
+    ) -> Bool {
+        guard let lastRefreshedAt = feed.lastRefreshedAt else {
+            return true
+        }
+        return now.timeIntervalSince(lastRefreshedAt) >= minimumInterval
     }
 }
 
