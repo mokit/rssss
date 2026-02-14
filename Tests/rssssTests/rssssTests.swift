@@ -2019,6 +2019,123 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(log.snapshot(), [feedURL])
     }
 
+
+    @MainActor
+    func testDeleteFeedRemovesFeedFromStore() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let store = FeedStore(persistence: persistence)
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com/delete-me.xml"
+        feed.orderIndex = 0
+        try context.save()
+
+        try store.deleteFeed(feed)
+
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        request.predicate = NSPredicate(format: "url == %@", "https://example.com/delete-me.xml")
+        let remaining = try context.fetch(request)
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    @MainActor
+    func testRefreshAllFeedsRefreshesEveryFeedEvenIfOneFails() async {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feedAURL = URL(string: "https://example.com/a.xml")!
+        let feedBURL = URL(string: "https://example.com/b.xml")!
+        addFeed(url: feedAURL.absoluteString, orderIndex: 0, in: context)
+        addFeed(url: feedBURL.absoluteString, orderIndex: 1, in: context)
+        try? context.save()
+
+        let log = URLRequestLog()
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            log.append(url)
+            if url == feedAURL {
+                throw URLError(.cannotFindHost)
+            }
+            return (
+                HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                Self.sampleRSSData
+            )
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        await store.refreshAllFeeds()
+
+        XCTAssertEqual(log.snapshot(), [feedAURL, feedBURL])
+    }
+
+    @MainActor
+    func testRefreshRetriesTransientNetworkFailures() async {
+        let persistence = PersistenceController(inMemory: true)
+        let feedURL = URL(string: "https://example.com/retry.xml")!
+        let feedData = Self.sampleRSSData
+        let attempts = AttemptCounter()
+
+        let session = makeMockedSession { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            let value = attempts.next()
+            if value < 3 {
+                throw URLError(.networkConnectionLost)
+            }
+            return (
+                HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                feedData
+            )
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        let feed = try? store.addFeed(urlString: feedURL.absoluteString)
+        if let feed {
+            try? await store.refresh(feed: feed)
+        }
+
+        XCTAssertEqual(attempts.value, 3)
+    }
+
+    @MainActor
+    func testRefreshDoesNotRetryNonTransientNetworkFailures() async {
+        let persistence = PersistenceController(inMemory: true)
+        let feedURL = URL(string: "https://example.com/no-retry.xml")!
+        let attempts = AttemptCounter()
+
+        let session = makeMockedSession { request in
+            _ = request
+            _ = attempts.next()
+            throw URLError(.badServerResponse)
+        }
+        defer {
+            URLProtocolMock.requestHandler = nil
+            session.invalidateAndCancel()
+        }
+
+        let store = FeedStore(persistence: persistence, urlSession: session)
+        let feed = try? store.addFeed(urlString: feedURL.absoluteString)
+        if let feed {
+            do {
+                try await store.refresh(feed: feed)
+                XCTFail("Expected refresh to throw")
+            } catch {
+                XCTAssertNotNil(error)
+            }
+        }
+
+        XCTAssertEqual(attempts.value, 1)
+    }
+
     @MainActor
     private func waitUntil(timeout: TimeInterval, condition: @escaping @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
@@ -2234,6 +2351,27 @@ private final class MockBackgroundRefreshScheduler: BackgroundRefreshScheduling 
     @MainActor
     func runLatest() async {
         await latestAction?()
+    }
+}
+
+
+private final class AttemptCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.lock()
+        count += 1
+        let value = count
+        lock.unlock()
+        return value
+    }
+
+    var value: Int {
+        lock.lock()
+        let current = count
+        lock.unlock()
+        return current
     }
 }
 
