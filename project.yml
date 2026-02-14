@@ -31,7 +31,16 @@ targets:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - path: Tests
+      - path: Tests/rssssTests
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: rssss
+  rssssUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: Tests/rssssUITests
     settings:
       GENERATE_INFOPLIST_FILE: YES
     dependencies:
@@ -45,3 +54,4 @@ schemes:
     test:
       targets:
         - rssssTests
+        - rssssUITests
