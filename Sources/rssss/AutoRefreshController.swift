@@ -128,9 +128,4 @@ final class AutoRefreshController: ObservableObject {
             await self.performBackgroundRefresh()
         }
     }
-
-    deinit {
-        foregroundScheduler.invalidate()
-        backgroundScheduler.invalidate()
-    }
 }

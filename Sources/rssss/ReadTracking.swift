@@ -2,7 +2,7 @@ import SwiftUI
 import CoreData
 
 struct ItemFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [NSManagedObjectID: CGRect] = [:]
+    static let defaultValue: [NSManagedObjectID: CGRect] = [:]
 
     static func reduce(value: inout [NSManagedObjectID: CGRect], nextValue: () -> [NSManagedObjectID: CGRect]) {
         for (key, nextFrame) in nextValue() {

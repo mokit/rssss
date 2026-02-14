@@ -9,10 +9,12 @@ struct ItemRowView: View {
     let onToggleStar: () -> Void
 
     var body: some View {
+        let isRead = item.isEffectivelyRead
+
         VStack(alignment: .leading, spacing: 6) {
             Text(item.displayTitle)
                 .font(.title3)
-                .foregroundStyle(item.isRead ? .secondary : .primary)
+                .foregroundStyle(isRead ? .secondary : .primary)
                 .lineLimit(2)
 
             HStack(spacing: 8) {
@@ -32,7 +34,7 @@ struct ItemRowView: View {
             if !item.displaySummary.isEmpty {
                 Text(item.displaySummary)
                     .font(.body)
-                    .foregroundStyle(item.isRead ? .tertiary : .secondary)
+                    .foregroundStyle(isRead ? .tertiary : .secondary)
                     .lineLimit(3)
             }
 
@@ -52,7 +54,7 @@ struct ItemRowView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(item.isRead)
+                .disabled(isRead)
 
                 Button("View") {
                     onView()
@@ -79,6 +81,7 @@ struct ItemRowView: View {
 
 }
 
+@MainActor
 enum RelativeDateFormatter {
     static let shared: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()

@@ -59,18 +59,49 @@ final class UnreadCountsController: NSObject, ObservableObject, @preconcurrency 
     }
 
     private func rebuildCounts() {
+        let context = controller.managedObjectContext
+        let request = NSFetchRequest<NSDictionary>(entityName: "FeedItem")
+        request.resultType = .dictionaryResultType
+        request.predicate = NSPredicate(format: "isRead == NO OR isRead == NIL")
+        request.propertiesToGroupBy = ["feed"]
+
+        let countExpression = NSExpressionDescription()
+        countExpression.name = "count"
+        countExpression.expression = NSExpression(
+            forFunction: "count:",
+            arguments: [NSExpression(forKeyPath: "feed")]
+        )
+        countExpression.expressionResultType = .integer64AttributeType
+        request.propertiesToFetch = ["feed", countExpression]
+
+        let rows = (try? context.fetch(request)) ?? []
         var next: [NSManagedObjectID: Int] = [:]
-        for item in controller.fetchedObjects ?? [] {
-            if item.isDeleted || item.managedObjectContext == nil {
+        next.reserveCapacity(rows.count)
+        for row in rows {
+            let countValue: Int
+            if let number = row["count"] as? NSNumber {
+                countValue = number.intValue
+            } else if let intValue = row["count"] as? Int {
+                countValue = intValue
+            } else if let int64Value = row["count"] as? Int64 {
+                countValue = Int(int64Value)
+            } else {
                 continue
             }
-            guard let feed = item.primitiveValue(forKey: "feed") as? Feed else {
+            guard countValue > 0 else {
                 continue
             }
-            if feed.isDeleted || feed.managedObjectContext == nil {
-                continue
+
+            if let feedID = row["feed"] as? NSManagedObjectID {
+                guard let feed = try? context.existingObject(with: feedID) as? Feed,
+                      !feed.isDeleted,
+                      feed.managedObjectContext != nil else {
+                    continue
+                }
+                next[feedID] = countValue
+            } else if let feed = row["feed"] as? Feed, !feed.isDeleted, feed.managedObjectContext != nil {
+                next[feed.objectID] = countValue
             }
-            next[feed.objectID, default: 0] += 1
         }
         counts = next
     }
@@ -168,7 +199,7 @@ final class FeedItemsController: NSObject, ObservableObject, @preconcurrency NSF
 
     private static func hasVisibleUnread(items: [FeedItem], sessionUnreadIDs: Set<NSManagedObjectID>) -> Bool {
         items.contains { item in
-            !item.isRead || sessionUnreadIDs.contains(item.objectID)
+            item.isEffectivelyUnread || sessionUnreadIDs.contains(item.objectID)
         }
     }
 }
@@ -268,10 +299,9 @@ final class StarredCountController: NSObject, ObservableObject, @preconcurrency 
     }
 
     private func rebuildCount() {
-        count = (controller.fetchedObjects ?? []).reduce(into: 0) { partialResult, item in
-            if !item.isDeleted && item.managedObjectContext != nil {
-                partialResult += 1
-            }
-        }
+        let context = controller.managedObjectContext
+        let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
+        request.predicate = NSPredicate(format: "isStarred == YES")
+        count = (try? context.count(for: request)) ?? 0
     }
 }

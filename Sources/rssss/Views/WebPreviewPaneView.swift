@@ -3,6 +3,7 @@ import AppKit
 import WebKit
 
 struct WebPreviewPaneView: View {
+    @EnvironmentObject private var logStore: AppLogStore
     let request: PreviewRequest
     let onClose: () -> Void
 
@@ -11,6 +12,7 @@ struct WebPreviewPaneView: View {
     @State private var currentURL: URL
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var lastLoggedLoadErrorSignature: String?
 
     init(request: PreviewRequest, onClose: @escaping () -> Void) {
         self.request = request
@@ -43,6 +45,7 @@ struct WebPreviewPaneView: View {
             currentURL = newURL
             pageTitle = nil
             errorMessage = nil
+            lastLoggedLoadErrorSignature = nil
         }
     }
 
@@ -102,6 +105,22 @@ struct WebPreviewPaneView: View {
         currentURL = state.url ?? request.url
         isLoading = state.isLoading
         errorMessage = state.errorMessage
+        if state.errorMessage == nil {
+            lastLoggedLoadErrorSignature = nil
+            return
+        }
+        logLoadErrorIfNeeded(state: state)
+    }
+
+    private func logLoadErrorIfNeeded(state: EmbeddedWebView.NavigationState) {
+        guard let errorMessage = state.errorMessage else { return }
+        let url = (state.url ?? request.url).absoluteString
+        let signature = "\(url)|\(errorMessage)"
+        guard signature != lastLoggedLoadErrorSignature else { return }
+        lastLoggedLoadErrorSignature = signature
+        logStore.add(
+            "Inline preview load failed: title=\"\(request.title)\", url=\(url), error=\(errorMessage)"
+        )
     }
 
     @ViewBuilder

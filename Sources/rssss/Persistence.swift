@@ -29,17 +29,17 @@ final class PersistenceController: ObservableObject {
             }
         }
         container.viewContext.automaticallyMergesChangesFromParent = true
-        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        container.viewContext.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
     }
 
     func markItemsRead(objectIDs: [NSManagedObjectID]) async {
         guard !objectIDs.isEmpty else { return }
         let context = container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
         await context.perform {
             for objectID in objectIDs {
                 guard let item = try? context.existingObject(with: objectID) as? FeedItem else { continue }
-                if !item.isRead {
+                if item.isEffectivelyUnread {
                     item.isRead = true
                 }
             }

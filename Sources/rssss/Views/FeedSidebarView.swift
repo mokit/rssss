@@ -124,6 +124,7 @@ struct FeedSidebarTableView: NSViewRepresentable {
         }
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         var parent: FeedSidebarTableView
         weak var tableView: NSTableView?

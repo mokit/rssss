@@ -3,6 +3,7 @@ import CoreData
 import AppKit
 
 struct StarredItemsView: View {
+    @EnvironmentObject private var logStore: AppLogStore
     private let viewContext: NSManagedObjectContext
     let initialItemsLimit: Int
     let sessionToken: UUID
@@ -113,6 +114,7 @@ struct StarredItemsView: View {
                         )
                         .coordinateSpace(name: "starredItemsScroll")
                         .onPreferenceChange(ItemFramePreferenceKey.self) { frames in
+                            guard frames != itemFrames else { return }
                             itemFrames = frames
                             guard !suppressReadTracking else { return }
                             let ids = ReadTracker.itemsToMarkRead(itemFrames: frames, containerMinY: 0)
@@ -189,22 +191,20 @@ struct StarredItemsView: View {
     }
 
     private func markReadOnNavigate(from objectID: NSManagedObjectID) {
-        if let item = itemsController.items.first(where: { $0.objectID == objectID }), !item.isRead {
+        if let item = itemsController.items.first(where: { $0.objectID == objectID }), item.isEffectivelyUnread {
             item.isRead = true
             if viewContext.hasChanges {
                 try? viewContext.save()
             }
         }
-        readMarker.queue([objectID])
     }
 
     private func markItemRead(_ item: FeedItem) {
-        guard !item.isRead else { return }
+        guard item.isEffectivelyUnread else { return }
         item.isRead = true
         if viewContext.hasChanges {
             try? viewContext.save()
         }
-        readMarker.queue([item.objectID])
     }
 
     private func suspendReadTracking() {
@@ -216,7 +216,15 @@ struct StarredItemsView: View {
     }
 
     private func openItem(_ item: FeedItem) {
-        guard let request = FeedItemsView.previewRequest(for: item) else { return }
+        guard let request = FeedItemsView.previewRequest(for: item) else {
+            logStore.add(
+                "Inline preview open failed: invalid starred item URL for \"\(item.displayTitle)\""
+            )
+            return
+        }
+        logStore.add(
+            "Inline preview open requested: source=starred, feed=\(item.feed.displayName), title=\"\(request.title)\", url=\(request.url.absoluteString)"
+        )
         onOpenInPreview(request)
     }
 

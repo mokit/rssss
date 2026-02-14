@@ -181,7 +181,7 @@ final class FeedStore: ObservableObject {
         let container = persistence.container
         let feedObjectID = feed.objectID
         let context = container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
 
         let insertedCount = try await context.perform { () -> Int in
             guard let backgroundFeed = try? context.existingObject(with: feedObjectID) as? Feed else { return 0 }
@@ -193,28 +193,33 @@ final class FeedStore: ObservableObject {
             }
             backgroundFeed.lastRefreshedAt = Date()
 
-            let request: NSFetchRequest<FeedItem> = FeedItem.fetchRequest()
+            let request = NSFetchRequest<NSDictionary>(entityName: "FeedItem")
             request.predicate = NSPredicate(format: "feed == %@", backgroundFeed)
+            request.resultType = .dictionaryResultType
+            request.propertiesToFetch = ["guid", "link", "title", "summary", "pubDate"]
             let existingItems = (try? context.fetch(request)) ?? []
             var existingKeys = Set<String>()
             existingKeys.reserveCapacity(existingItems.count)
 
             for item in existingItems {
                 let key = Deduper.itemKey(
-                    guid: item.guid,
-                    link: item.link,
-                    title: item.title,
-                    pubDate: item.pubDate
+                    guid: item["guid"] as? String,
+                    link: item["link"] as? String,
+                    title: item["title"] as? String,
+                    summary: SummaryNormalizer.normalized(item["summary"] as? String),
+                    pubDate: item["pubDate"] as? Date
                 )
                 existingKeys.insert(key)
             }
 
             var insertedCount = 0
             for parsedItem in parsed.items {
+                let normalizedSummary = SummaryNormalizer.normalized(parsedItem.summary)
                 let key = Deduper.itemKey(
                     guid: parsedItem.guid,
                     link: parsedItem.link,
                     title: parsedItem.title,
+                    summary: normalizedSummary,
                     pubDate: parsedItem.pubDate
                 )
                 if existingKeys.contains(key) {
@@ -225,7 +230,7 @@ final class FeedStore: ObservableObject {
                 newItem.guid = parsedItem.guid
                 newItem.link = parsedItem.link
                 newItem.title = parsedItem.title
-                newItem.summary = SummaryNormalizer.normalized(parsedItem.summary)
+                newItem.summary = normalizedSummary
                 newItem.pubDate = parsedItem.pubDate
                 newItem.isRead = false
                 newItem.isStarred = false
@@ -249,7 +254,7 @@ final class FeedStore: ObservableObject {
     func normalizeLegacySummaries(feedObjectID: NSManagedObjectID, maxItemsPerRun: Int = 500) async {
         let clampedMaxItems = max(1, maxItemsPerRun)
         let context = persistence.container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
 
         let (feedURL, normalizedCount) = await context.perform { () -> (String?, Int) in
             guard let feed = try? context.existingObject(with: feedObjectID) as? Feed else {
@@ -610,7 +615,7 @@ final class FeedStore: ObservableObject {
     func markAllRead(feedObjectID: NSManagedObjectID) async throws {
         let container = persistence.container
         let context = container.newBackgroundContext()
-        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
 
         let updatedObjectIDs: [NSManagedObjectID] = try await withCheckedThrowingContinuation { continuation in
             context.perform {
@@ -623,7 +628,7 @@ final class FeedStore: ObservableObject {
                     let fetchRequest = NSFetchRequest<FeedItem>(entityName: "FeedItem")
                     fetchRequest.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
                         NSPredicate(format: "feed == %@", backgroundFeed),
-                        NSPredicate(format: "isRead == NO")
+                        NSPredicate(format: "isRead == NO OR isRead == NIL")
                     ])
                     let items = try context.fetch(fetchRequest)
                     guard !items.isEmpty else {
@@ -744,7 +749,13 @@ final class OPMLDocumentParser: NSObject, XMLParserDelegate {
 }
 
 enum Deduper {
-    static func itemKey(guid: String?, link: String?, title: String?, pubDate: Date?) -> String {
+    static func itemKey(
+        guid: String?,
+        link: String?,
+        title: String?,
+        summary: String? = nil,
+        pubDate: Date?
+    ) -> String {
         let trimmedGuid = guid?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmedGuid, !trimmedGuid.isEmpty {
             return "guid:\(trimmedGuid)"
@@ -768,6 +779,11 @@ enum Deduper {
             return components.joined(separator: "|")
         }
 
-        return UUID().uuidString
+        let trimmedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedSummary, !trimmedSummary.isEmpty {
+            return "summary:\(trimmedSummary)"
+        }
+
+        return "empty"
     }
 }

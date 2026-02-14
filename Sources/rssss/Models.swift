@@ -1,5 +1,6 @@
 import CoreData
 
+@MainActor
 final class ManagedModel {
     static let shared = ManagedModel.makeModel()
 
@@ -212,5 +213,14 @@ extension FeedItem {
 
     var displaySummary: String {
         summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    // Treat legacy nil read flags as unread so list filtering matches unread badge counts.
+    var isEffectivelyUnread: Bool {
+        primitiveValue(forKey: "isRead") == nil || !isRead
+    }
+
+    var isEffectivelyRead: Bool {
+        !isEffectivelyUnread
     }
 }

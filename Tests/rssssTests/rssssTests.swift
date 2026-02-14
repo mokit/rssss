@@ -1339,6 +1339,56 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(filtered.count, 2)
     }
 
+    @MainActor
+    func testFeedItemLegacyNilReadFlagIsTreatedAsUnread() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.createdAt = Date()
+        item.feed = feed
+        item.setPrimitiveValue(nil, forKey: "isRead")
+
+        XCTAssertTrue(item.isEffectivelyUnread)
+        XCTAssertFalse(item.isEffectivelyRead)
+    }
+
+    @MainActor
+    func testFeedItemsFilteringIncludesLegacyNilReadFlags() {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com"
+
+        let legacyUnread = FeedItem(context: context)
+        legacyUnread.id = UUID()
+        legacyUnread.createdAt = Date()
+        legacyUnread.feed = feed
+        legacyUnread.setPrimitiveValue(nil, forKey: "isRead")
+
+        let readItem = FeedItem(context: context)
+        readItem.id = UUID()
+        readItem.createdAt = Date().addingTimeInterval(1)
+        readItem.feed = feed
+        readItem.isRead = true
+
+        let filtered = FeedItemsView.filteredItems(
+            items: [legacyUnread, readItem],
+            showRead: false,
+            sessionUnreadIDs: []
+        )
+
+        XCTAssertEqual(filtered.count, 1)
+        XCTAssertEqual(filtered.first?.objectID, legacyUnread.objectID)
+    }
+
     func testFeedItemsNextSelectionIndexKeyboardBehavior() {
         XCTAssertNil(FeedItemsView.nextSelectionIndex(currentIndex: nil, itemCount: 0, delta: 1))
         XCTAssertEqual(FeedItemsView.nextSelectionIndex(currentIndex: nil, itemCount: 3, delta: 1), 0)
@@ -1969,10 +2019,11 @@ final class rssssTests: XCTestCase {
         XCTAssertEqual(log.snapshot(), [feedURL])
     }
 
+    @MainActor
     private func waitUntil(timeout: TimeInterval, condition: @escaping @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if await condition() { return }
+            if condition() { return }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
@@ -2180,13 +2231,41 @@ private final class MockBackgroundRefreshScheduler: BackgroundRefreshScheduling 
 
     func invalidate() {}
 
+    @MainActor
     func runLatest() async {
         await latestAction?()
     }
 }
 
 private final class URLProtocolMock: URLProtocol {
-    static var requestHandler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+    private final class RequestHandlerStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+
+        func get() -> (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+            lock.lock()
+            let current = handler
+            lock.unlock()
+            return current
+        }
+
+        func set(_ handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?) {
+            lock.lock()
+            self.handler = handler
+            lock.unlock()
+        }
+    }
+
+    private static let requestHandlerStorage = RequestHandlerStorage()
+
+    static var requestHandler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get {
+            requestHandlerStorage.get()
+        }
+        set {
+            requestHandlerStorage.set(newValue)
+        }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool {
         true

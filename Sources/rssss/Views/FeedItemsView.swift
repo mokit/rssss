@@ -127,6 +127,7 @@ struct FeedItemsView: View {
                         )
                         .coordinateSpace(name: "itemsScroll")
                         .onPreferenceChange(ItemFramePreferenceKey.self) { frames in
+                            guard frames != itemFrames else { return }
                             itemFrames = frames
                             guard !suppressReadTracking else { return }
                             let ids = ReadTracker.itemsToMarkRead(itemFrames: frames, containerMinY: 0)
@@ -170,7 +171,7 @@ struct FeedItemsView: View {
             onFeedBound(feedObjectID)
         }
         .task(id: sessionToken) {
-            sessionUnreadIDs = Set(itemsController.items.filter { !$0.isRead }.map { $0.objectID })
+            sessionUnreadIDs = Set(itemsController.items.filter(\.isEffectivelyUnread).map(\.objectID))
             applyAutoExpandAndLogIfNeeded()
         }
         .onChange(of: showRead) { _, _ in
@@ -245,22 +246,20 @@ struct FeedItemsView: View {
     }
 
     private func markReadOnNavigate(from objectID: NSManagedObjectID) {
-        if let item = itemsController.items.first(where: { $0.objectID == objectID }), !item.isRead {
+        if let item = itemsController.items.first(where: { $0.objectID == objectID }), item.isEffectivelyUnread {
             item.isRead = true
             if viewContext.hasChanges {
                 try? viewContext.save()
             }
         }
-        readMarker.queue([objectID])
     }
 
     private func markItemRead(_ item: FeedItem) {
-        guard !item.isRead else { return }
+        guard item.isEffectivelyUnread else { return }
         item.isRead = true
         if viewContext.hasChanges {
             try? viewContext.save()
         }
-        readMarker.queue([item.objectID])
     }
 
     private func suspendReadTracking() {
@@ -272,7 +271,15 @@ struct FeedItemsView: View {
     }
 
     private func openItem(_ item: FeedItem) {
-        guard let request = FeedItemsView.previewRequest(for: item) else { return }
+        guard let request = FeedItemsView.previewRequest(for: item) else {
+            logStore.add(
+                "Inline preview open failed: invalid item URL for \"\(item.displayTitle)\""
+            )
+            return
+        }
+        logStore.add(
+            "Inline preview open requested: feed=\(item.feed.displayName), title=\"\(request.title)\", url=\(request.url.absoluteString)"
+        )
         onOpenInPreview(request)
     }
 
@@ -355,7 +362,7 @@ struct FeedItemsView: View {
 extension FeedItemsView {
     struct SessionUnreadSnapshot: Equatable {
         let objectID: NSManagedObjectID
-        let isRead: Bool
+        let isUnread: Bool
     }
 
     static func itemIdentity(_ item: FeedItem) -> NSManagedObjectID {
@@ -371,16 +378,16 @@ extension FeedItemsView {
             return items
         }
         return items.filter { item in
-            !item.isRead || sessionUnreadIDs.contains(item.objectID)
+            item.isEffectivelyUnread || sessionUnreadIDs.contains(item.objectID)
         }
     }
 
     static func sessionUnreadSnapshot(items: [FeedItem]) -> [SessionUnreadSnapshot] {
-        items.map { SessionUnreadSnapshot(objectID: $0.objectID, isRead: $0.isRead) }
+        items.map { SessionUnreadSnapshot(objectID: $0.objectID, isUnread: $0.isEffectivelyUnread) }
     }
 
     static func nextSessionUnreadIDs(current: Set<NSManagedObjectID>, items: [FeedItem]) -> Set<NSManagedObjectID> {
-        let unreadIDs = Set(items.filter { !$0.isRead }.map { $0.objectID })
+        let unreadIDs = Set(items.filter(\.isEffectivelyUnread).map(\.objectID))
         if unreadIDs.isEmpty {
             return []
         }
