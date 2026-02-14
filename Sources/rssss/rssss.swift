@@ -10,8 +10,18 @@ struct rssssApp: App {
     @StateObject private var logStore: AppLogStore
     @StateObject private var performanceMonitor: PerformanceMonitor
 
+    private static let uiTestingFlag = "RSSSS_UI_TESTING"
+    private static let uiTestingSeedFlag = "RSSSS_UI_TESTING_SEED_DATA"
+
     init() {
-        let persistence = PersistenceController.shared
+        let environment = ProcessInfo.processInfo.environment
+        let isUITesting = environment[Self.uiTestingFlag] == "1"
+        let shouldSeedUITestData = environment[Self.uiTestingSeedFlag] == "1"
+
+        let persistence = isUITesting ? PersistenceController(inMemory: true) : PersistenceController.shared
+        if shouldSeedUITestData {
+            Self.seedUITestDataIfNeeded(in: persistence.container.viewContext)
+        }
         let logStore = AppLogStore()
         let feedStore = FeedStore(persistence: persistence, logStore: logStore)
         let settingsStore = RefreshSettingsStore()
@@ -23,6 +33,35 @@ struct rssssApp: App {
             wrappedValue: AutoRefreshController(feedStore: feedStore)
         )
         _performanceMonitor = StateObject(wrappedValue: PerformanceMonitor())
+    }
+
+    private static func seedUITestDataIfNeeded(in context: NSManagedObjectContext) {
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        request.fetchLimit = 1
+        if (try? context.count(for: request)) ?? 0 > 0 {
+            return
+        }
+
+        let feed = Feed(context: context)
+        feed.id = UUID()
+        feed.url = "https://example.com/ui-testing.xml"
+        feed.title = "UI Test Feed"
+        feed.orderIndex = 0
+        feed.lastRefreshedAt = Date()
+
+        let item = FeedItem(context: context)
+        item.id = UUID()
+        item.feed = feed
+        item.guid = "ui-test-item-1"
+        item.link = "https://example.com/ui-test-item"
+        item.title = "UI Test Item"
+        item.summary = "Seeded item used for UI smoke tests."
+        item.pubDate = Date()
+        item.createdAt = Date()
+        item.isRead = false
+        item.isStarred = false
+
+        try? context.save()
     }
 
     var body: some Scene {
