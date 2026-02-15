@@ -3,6 +3,7 @@ import CoreData
 import AppKit
 @testable import rssss
 
+@MainActor
 final class rssssTests: XCTestCase {
     func testDeduperPrefersGuid() {
         let key = Deduper.itemKey(guid: "abc", link: "https://example.com", title: "Title", pubDate: nil)
@@ -2149,7 +2150,7 @@ final class rssssTests: XCTestCase {
         }
     }
 
-    private static let sampleRSSData = Data(
+    nonisolated private static let sampleRSSData = Data(
         """
         <?xml version="1.0" encoding="UTF-8"?>
         <rss version="2.0">
